@@ -60,15 +60,15 @@ After installation, the application is ready to use.
 
 ## Directory Structure
 
-- /uploads/ Uploaded files
-- /links/ Share link data
-- /links/byname/ Reverse share index
-- /cache/ Runtime caches
-- index.php Main application
-- install.php Installer
-- download.php File downloads
-- link.php Share / unshare endpoint
-- lib.php Shared helpers
+- /uploads/ (Uploaded files)
+- /links/ (Share link data)
+- /links/byname/ (Reverse share index)
+- /cache/ (Runtime caches)
+- index.php (Main application)
+- install.php (Installer)
+- download.php (File downloads)
+- link.php (Share / unshare endpoint)
+- lib.php (Shared helpers)
 
 
 Runtime directories are created automatically if missing.
