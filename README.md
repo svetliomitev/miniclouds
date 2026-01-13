@@ -1,7 +1,6 @@
 # MiniCloudS
 
-**MiniCloudS** is a lightweight, self-hosted PHP file-sharing application with secure uploads, share links, and self-healing indexes.  
-It is designed for administrators and individuals who want full control over their files without databases or external services.
+**MiniCloudS** is a lightweight, self-hosted PHP file-sharing application with secure uploads, share links, and self-healing indexes. It is designed for administrators and individuals who want full control over their files without databases or external services.
 
 ---
 
