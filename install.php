@@ -6,7 +6,7 @@ require_once __DIR__ . '/lib.php';
 mc_security_headers();
 mc_session_start();
 
-$APP_VERSION = '1.5.86';
+$APP_VERSION = '1.5.85';
 
 /* =========================
    INSTALLER WIZARD (responsive)
