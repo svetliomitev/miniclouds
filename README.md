@@ -1,15 +1,11 @@
-<h1 align="center">
-  <a href="https://miniclouds.cloud">MiniClouds</a>
-</h1>
+## MiniCloudS
 
-<p align="center">
   <a href="https://github.com/svetliomitev/miniclouds/releases">
     <img src="https://img.shields.io/github/v/release/svetliomitev/miniclouds?label=version&color=orange">
   </a>
   <a href="https://miniclouds.cloud">
     <img src="https://img.shields.io/badge/website-miniclouds.cloud-blue">
   </a>
-</p>
 
 **MiniCloudS** is a lightweight, self-hosted PHP file-sharing application with secure uploads, share links, and self-healing indexes. It is designed for administrators and individuals who want full control over their files without databases or external services.
 
