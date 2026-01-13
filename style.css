@@ -337,43 +337,77 @@ mark{ padding: .05em .2em; border-radius: .25rem; }
 }
 
 /* =========================
-   FOOTER (your current markup: footerbar/footcard)
+   FOOTER
    ========================= */
+
 .footerbar{
   margin-top: 18px;
   padding: 14px 0 22px;
   color: rgba(255,255,255,.70);
   font-size: .875rem;
 }
+
 .footerbar .footcard{
   border: 1px solid rgba(255,255,255,.10);
   background: rgba(255,255,255,.03);
   border-radius: .75rem;
   padding: .75rem .9rem;
+
+  display: flex;
+  flex-direction: column;   /* stack rows vertically */
+  gap: .55rem;
+}
+
+/* ROW 1: version (left) | size (right) */
+.footcard-row{
   display:flex;
   align-items:center;
   justify-content:space-between;
   gap:.75rem;
-  flex-wrap:wrap;
 }
-.footerbar .left{
-  display:flex;
-  align-items:center;
-  gap:.55rem;
-  min-width:0;
-}
-.footerbar .right{
+
+.footcard-row .left,
+.footcard-row .right{
   display:flex;
   align-items:center;
   gap:.55rem;
 }
-.footerbar i{ font-size: 1rem; opacity: .9; }
+
+.footcard-row .left{ min-width:0; }
+
+.footerbar i{
+  font-size: 1rem;
+  opacity: .9;
+}
+
 .footerbar code{
   background: rgba(255,255,255,.04);
   border: 1px solid rgba(255,255,255,.10);
   color: rgba(255,255,255,.85);
   border-radius: .45rem;
   padding: .05rem .35rem;
+}
+
+/* ROW 2: separator */
+.footcard-sep{
+  width: 100%;
+  height: 1px;
+  margin: .2rem 0 .1rem;
+  background: linear-gradient(
+    to right,
+    transparent,
+    rgba(255,255,255,.35),
+    transparent
+  );
+}
+
+/* ROW 3: copyright note */
+.footcard-note{
+  width: 100%;
+  text-align: center;
+  font-size: .85rem;
+  opacity: .85;
+  line-height: 1.3;
 }
 
 /* Dropdown alignment helper you already use */
@@ -389,4 +423,34 @@ mark{ padding: .05em .2em; border-radius: .25rem; }
 /* Hidden iframe for direct downloads in admin view */
 #mcDownloadFrame{
   display: none;
+}
+
+/* =========================
+   BRAND (App name + PNG icon)
+   ========================= */
+
+.mc-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.mc-brand-img {
+  width: 1.7em;   /* proportionate to 1.25rem app name */
+  height: 1.7em;
+  flex: 0 0 auto;
+  display: block;
+}
+
+.mc-brand-text {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+/* Slightly reduce on very small screens */
+@media (max-width: 360px) {
+  .mc-brand-img {
+    width: 1.5em;
+    height: 1.5em;
+  }
 }

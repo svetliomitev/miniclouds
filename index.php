@@ -1075,6 +1075,8 @@ $totalHuman = format_bytes((int)$totalBytes);
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title><?=h($APP_NAME)?></title>
+  <link rel="icon" type="image/png" sizes="512x512" href="miniclouds-icon.png">
+  <link rel="apple-touch-icon" sizes="512x512" href="miniclouds-icon.png">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
   <link rel="stylesheet" href="style.css?v=<?=rawurlencode((string)($APP_VERSION ?? '1'))?>">
@@ -1086,7 +1088,17 @@ $totalHuman = format_bytes((int)$totalBytes);
     <div class="mc-navbar-inner">
 
       <div class="mc-app-name">
-        <?= h($APP_NAME) ?>
+        <span class="mc-brand" aria-label="<?= h($APP_NAME) ?>">
+          <img
+            src="miniclouds-icon.png"
+            class="mc-brand-img"
+            width="28"
+            height="28"
+            alt=""
+            decoding="async"
+          >
+          <span class="mc-brand-text"><?= h($APP_NAME) ?></span>
+        </span>
       </div>
 
       <button
@@ -1300,23 +1312,33 @@ $totalHuman = format_bytes((int)$totalBytes);
 
   </div>
 
-  <div class="footerbar">
-      <div class="footcard">
-        <div class="left">
-          <i class="bi bi-cloud-fill" aria-hidden="true"></i>
-          <span>
-            <code>v.<?= h($APP_VERSION) ?></code>
-          </span>
-        </div>
+<div class="footerbar">
+  <div class="footcard">
 
-        <div class="right">
-          <i class="bi bi-hdd-stack-fill" aria-hidden="true"></i>
-          <span>
-            <code id="totalUploaded"><?= h($totalHuman) ?></code>
-          </span>
-        </div>
+    <!-- ROW 1: version | size -->
+    <div class="footcard-row">
+      <div class="left">
+        <i class="bi bi-cloud-fill" aria-hidden="true"></i>
+        <span><code>v.<?= h($APP_VERSION) ?></code></span>
       </div>
+
+      <div class="right">
+        <i class="bi bi-hdd-stack-fill" aria-hidden="true"></i>
+        <span><code id="totalUploaded"><?= h($totalHuman) ?></code></span>
+      </div>
+    </div>
+
+    <!-- ROW 2: separator -->
+    <div class="footcard-sep"></div>
+
+    <!-- ROW 3: copyright -->
+    <div class="footcard-note">
+      © <?= date('Y') ?> Svetoslav Mitev. Based on MiniCloudS.
+    </div>
+
   </div>
+</div>
+
 </div>
 
 <!-- ACTION TOAST (pretty) -->
