@@ -1,7 +1,6 @@
 # MiniCloudS
 
-![Version](https://img.shields.io/github/v/release/svetliomitev/miniclouds) [![Website](https://img.shields.io/badge/View-Website-blue)]
-(https://miniclouds.cloud)
+![Version](https://img.shields.io/github/v/release/svetliomitev/miniclouds) [![Website](https://img.shields.io/badge/View-Website-blue)](https://miniclouds.cloud)
 
 **MiniCloudS** is a lightweight, self-hosted PHP file-sharing application with secure uploads, share links, and self-healing indexes. It is designed for administrators and individuals who want full control over their files without databases or external services.
 
