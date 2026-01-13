@@ -3,6 +3,7 @@
   <a href="https://github.com/svetliomitev/miniclouds/releases">
     <img src="https://img.shields.io/github/v/release/svetliomitev/miniclouds?label=version&color=orange">
   </a>
+
   <a href="https://miniclouds.cloud">
     <img src="https://img.shields.io/badge/website-miniclouds.cloud-blue">
   </a>
