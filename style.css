@@ -1,0 +1,392 @@
+/* =========================================
+   MiniCloudS style.css
+   (Bootstrap is loaded from CDN; this file only adds app UI)
+   ========================================= */
+
+/* ----- small page spacing helper ----- */
+.mc-page-pad{ padding-bottom: 26px; }
+
+/* =========================
+   FILE CARD
+   ========================= */
+.file-card{
+  border: 1px solid rgba(255,255,255,.10);
+  border-radius: .75rem;
+  padding: .85rem .85rem .85rem 1.15rem;
+  height: 100%;
+  background: rgba(255,255,255,.03);
+  display: flex;
+  flex-direction: column;
+  gap: .4rem;
+  position: relative;
+  overflow: hidden;
+}
+.file-card.alt{ background: rgba(255,255,255,.06); }
+
+.file-card::before{
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 5px;
+  background: transparent;
+}
+.file-card.shared::before{
+  background: rgba(25,135,84,.95);
+}
+
+.file-name{
+  font-weight: 600;
+  line-height: 1.2;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.file-meta{
+  font-size: .875rem;
+  color: rgba(255,255,255,.70);
+}
+.file-meta-row{
+  display:flex;
+  justify-content:space-between;
+  align-items:baseline;
+  gap:.75rem;
+  flex-wrap:wrap;
+}
+
+.file-link-row{ margin-top: .35rem; }
+
+.file-link-pill{
+  display:block;
+  width:100%;
+  border-radius: .6rem;
+  padding: .45rem .6rem;
+  background: rgba(255,255,255,.04);
+  border: 1px solid rgba(255,255,255,.12);
+  color: rgba(255,255,255,.82);
+  font-size: .85rem;
+  line-height: 1.25;
+  user-select: none;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+.file-link-pill.is-clickable{ cursor: pointer; }
+.file-link-pill.is-clickable:hover{ background: rgba(255,255,255,.06); }
+.file-link-pill code{ background: transparent; padding: 0; color: inherit; }
+
+.file-actions{
+  display: flex;
+  gap: .5rem;
+  margin-top: auto;
+}
+.file-actions > *{ flex: 1 1 0; min-width: 0; }
+.file-actions form{ margin: 0; }
+.file-actions .btn{ width: 100%; }
+
+/* =========================
+   TOASTS
+   ========================= */
+.toast-wrap{
+  right: 0;
+  bottom: 0;
+  width: 420px;
+  max-width: calc(100vw - 1.5rem);
+  pointer-events: none;
+}
+.toast-wrap .toast{ pointer-events: auto; }
+.toast-wrap-action{ z-index: 1300; }
+.toast-wrap-search { z-index: 1290; }
+
+@media (max-width: 576px){
+  .toast-wrap{
+    left: 0;
+    right: 0;
+    width: 100%;
+    max-width: 100%;
+    padding: .75rem !important;
+  }
+  .toast-wrap .toast{ border-radius: .5rem; }
+}
+
+.toast.pretty .toast-body{
+  display:flex;
+  align-items:stretch;
+  gap:.75rem;
+}
+
+.toast-icon{
+  width:44px;
+  min-width:44px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  line-height:1;
+}
+.toast-icon i{ font-size: 1.35rem; color: currentColor; }
+
+.toast-vline{
+  width:1px;
+  background:rgba(255,255,255,.22);
+  border-radius:1px;
+}
+
+.toast-text{
+  display:flex;
+  flex-direction:column;
+  justify-content:center;
+  min-width:0;
+  flex: 1 1 auto;
+}
+.toast-text .toast-title{
+  font-weight:700;
+  line-height:1.2;
+  margin:0;
+}
+.toast-text .toast-msg{
+  font-size:.875rem;
+  opacity:.9;
+  margin:0;
+  word-break:break-word;
+  overflow-wrap:anywhere;
+}
+
+.toast-close{
+  width:44px;
+  min-width:44px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  line-height:1;
+}
+.toast-close .toast-x{
+  appearance:none;
+  border:0;
+  background:transparent;
+  color:currentColor;
+  padding:0;
+  width:36px;
+  height:36px;
+  border-radius:10px;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  opacity:.9;
+}
+.toast-close .toast-x:hover{ opacity:1; background:rgba(255,255,255,.10); }
+.toast-close .toast-x:active{ transform: translateY(1px); }
+.toast-close .toast-x i{ font-size: 1.1rem; }
+
+#toastSearch{ cursor: pointer; user-select: none; }
+#toastSearch:active{ transform: translateY(1px); }
+
+/* =========================
+   BACK TO TOP (fixed size, no distortion)
+   ========================= */
+.back-to-top{
+  position: fixed;
+  left: 1rem;
+  bottom: 1rem;
+  z-index: 1080;
+  display: none;
+
+  width: 44px;
+  height: 44px;
+  padding: 0;
+
+  border-radius: .75rem;
+  font-size: 1.15rem;
+  font-weight: 800;
+  line-height: 1;
+
+  box-shadow: 0 .5rem 1rem rgba(0,0,0,.25);
+}
+.back-to-top.show{
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* =========================
+   SEARCH
+   ========================= */
+mark{ padding: .05em .2em; border-radius: .25rem; }
+
+.search-clear{ width: 100%; }
+@media (min-width: 768px){
+  .search-clear{ width: auto; white-space: nowrap; }
+}
+
+/* =========================
+   NAVBAR (name left / Info button right)
+   ========================= */
+.mc-navbar{ padding-top: .85rem; padding-bottom: .85rem; }
+
+.mc-navbar-inner{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap: .75rem;
+  width: 100%;
+}
+
+.mc-app-name{
+  font-size: 1.25rem;
+  font-weight: 600;
+  line-height: 1.2;
+  margin: 0;
+  min-width: 0;
+}
+
+.mc-info-btn{
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+/* Keep it usable on narrow screens */
+@media (max-width: 360px){
+  .mc-info-btn{
+    padding-left: .5rem;
+    padding-right: .5rem;
+  }
+  .mc-info-btn .me-1{ margin-right: .25rem !important; }
+}
+
+/* =========================
+   INFO MODAL
+   - smaller typography
+   - NO bold weights (normal only)
+   - blue “token” look uses borders/background, not bold
+   ========================= */
+.mc-info-modal-body{
+  font-size: .9rem;
+  line-height: 1.35;
+  font-weight: 400;
+}
+
+.mc-info-grid{
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: .75rem;
+}
+@media (min-width: 768px){
+  .mc-info-grid{
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+.mc-info-section{
+  border: 1px solid rgba(255,255,255,.10);
+  background: rgba(255,255,255,.03);
+  border-radius: .75rem;
+  padding: .65rem .75rem;
+}
+
+/* section labels (kept subtle, not bold) */
+.mc-info-h{
+  font-size: .75rem;
+  font-weight: 400;
+  letter-spacing: .02em;
+  color: rgba(255,255,255,.70);
+  text-transform: uppercase;
+  margin-bottom: .4rem;
+}
+
+.mc-info-v{
+  min-width: 0;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  font-weight: 400;
+}
+
+/* subheadings (kept subtle, not bold) */
+.mc-info-h2{
+  font-size: .8rem;
+  font-weight: 400;
+  color: rgba(255,255,255,.80);
+  text-transform: uppercase;
+  letter-spacing: .02em;
+  margin-bottom: .45rem;
+}
+
+.mc-info-list{
+  margin: 0;
+  padding-left: 1.1rem;
+}
+.mc-info-list li{
+  margin: .25rem 0;
+  font-weight: 400;
+}
+
+/* explanatory paragraph used in the modal */
+.mc-info-note{
+  margin: .35rem 0 .6rem;
+  color: rgba(255,255,255,.70);
+  font-weight: 400;
+}
+
+/* “Upload button blue” token style (NOT bold) */
+.mc-code-primary{
+  display: inline-block;
+  color: var(--bs-primary);
+  background: rgba(var(--bs-primary-rgb), .12);
+  border: 1px solid rgba(var(--bs-primary-rgb), .35);
+  border-radius: .45rem;
+  padding: .05rem .35rem;
+  font-weight: 400;
+}
+
+/* =========================
+   FOOTER (your current markup: footerbar/footcard)
+   ========================= */
+.footerbar{
+  margin-top: 18px;
+  padding: 14px 0 22px;
+  color: rgba(255,255,255,.70);
+  font-size: .875rem;
+}
+.footerbar .footcard{
+  border: 1px solid rgba(255,255,255,.10);
+  background: rgba(255,255,255,.03);
+  border-radius: .75rem;
+  padding: .75rem .9rem;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:.75rem;
+  flex-wrap:wrap;
+}
+.footerbar .left{
+  display:flex;
+  align-items:center;
+  gap:.55rem;
+  min-width:0;
+}
+.footerbar .right{
+  display:flex;
+  align-items:center;
+  gap:.55rem;
+}
+.footerbar i{ font-size: 1rem; opacity: .9; }
+.footerbar code{
+  background: rgba(255,255,255,.04);
+  border: 1px solid rgba(255,255,255,.10);
+  color: rgba(255,255,255,.85);
+  border-radius: .45rem;
+  padding: .05rem .35rem;
+}
+
+/* Dropdown alignment helper you already use */
+.mc-flag-dd .dropdown-toggle{
+  width: 100%;
+  text-align: left;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:.75rem;
+}
+
+/* Hidden iframe for direct downloads in admin view */
+#mcDownloadFrame{
+  display: none;
+}
