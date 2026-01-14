@@ -6,6 +6,16 @@
 
 ---
 
+# Screenshots
+
+![Desktop](https://raw.githubusercontent.com/svetliomitev/miniclouds/docs/screenshots/miniclouds-desktop.png)
+
+![Mobile](https://raw.githubusercontent.com/svetliomitev/miniclouds/docs/screenshots/miniclouds-mobile.png)
+
+![Installer](https://raw.githubusercontent.com/svetliomitev/miniclouds/docs/screenshots/miniclouds-installer.png)
+
+---
+
 ## Features
 
 - Self-hosted file uploads and downloads
