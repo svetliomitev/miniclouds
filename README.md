@@ -65,7 +65,18 @@ Indexes are rebuilt only when needed, keeping runtime overhead low.
    - `.htaccess`
    - `.htpasswd` (authentication is enabled that way, via classic prompt in your browser)
    - `install_state.json`
-6. Actually you might want to have more than one instance of MiniCloudS just by installing it in several subdirectories in your web accessible path. MiniCloudS can be independent that way, does not need DB, its .htaccess rules apply per instance. Just avoid the following scenario:
+6. **Multiple instances**
+
+> 💡 **Note**  
+> You may want to run more than one MiniCloudS instance by installing it in
+> separate subdirectories under your web-accessible path.
+>
+> Each instance is fully independent:
+> - no database required
+> - `.htaccess` rules apply per instance
+> - isolated runtime state and files
+>
+> **Avoid the following setup:**
 
 ```text
 /public_html/{instance}
