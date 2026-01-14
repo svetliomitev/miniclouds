@@ -4,9 +4,38 @@
 (function(){
   'use strict';
 
-  var BOOT = window.MC_BOOT || {};
+  var BOOT = (function(){
+    try {
+      var el = document.getElementById('mc-boot');
+      if (!el) return {};
+      var txt = String(el.textContent || '').trim();
+      if (!txt) return {};
+      var data = JSON.parse(txt);
+      return (data && typeof data === 'object') ? data : {};
+    } catch (e) {
+      return {};
+    }
+  })();
   var PAGE_SIZE = Number(BOOT.pageSize || 20);
   var csrfToken = String(BOOT.csrf || '');
+  
+  // CSP-safe: set progress width via CSS class (mc-w-0..mc-w-100), not inline style
+  function setPctClass(el, pct){
+    if (!el) return;
+    pct = Math.max(0, Math.min(100, Math.round(Number(pct) || 0)));
+
+    // remove any previous mc-w-* class
+    var parts = String(el.className || '').split(/\s+/);
+    var kept = [];
+    for (var i = 0; i < parts.length; i++){
+      var c = parts[i];
+      if (!c) continue;
+      if (c.indexOf('mc-w-') === 0) continue;
+      kept.push(c);
+    }
+    kept.push('mc-w-' + pct);
+    el.className = kept.join(' ').trim();
+  }
 
   /* =========================
      LIFECYCLE MANAGER (single place for transient UI listeners)
@@ -967,11 +996,11 @@
     function setProgress(pct){
       pct = Math.max(0, Math.min(100, pct));
       wrap.classList.remove('d-none');
-      bar.style.width = pct + '%';
+      setPctClass(bar, pct);          // <-- CSP-safe (no inline style)
       bar.textContent = pct + '%';
     }
     function resetProgress(){
-      bar.style.width = '0%';
+      setPctClass(bar, 0);            // <-- CSP-safe (no inline style)
       bar.textContent = '0%';
       wrap.classList.add('d-none');
     }

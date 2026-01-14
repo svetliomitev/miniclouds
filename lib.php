@@ -44,15 +44,41 @@ function mc_redirect_error(int $code): never {
     exit;
 }
 
+function mc_csp_nonce(): string {
+    static $n = '';
+    if ($n !== '') return $n;
+    $n = rtrim(strtr(base64_encode(random_bytes(16)), '+/', '-_'), '=');
+    return $n;
+}
+
 /* =========================
    SECURITY HEADERS
    ========================= */
 
-function mc_security_headers(): void {
+function mc_security_headers(): void
+{
     header('X-Robots-Tag: noindex, nofollow, noarchive', true);
     header('X-Frame-Options: DENY', true);
     header('X-Content-Type-Options: nosniff', true);
     header('Referrer-Policy: same-origin', true);
+
+    $nonce = mc_csp_nonce();
+
+    header(
+        "Content-Security-Policy: "
+        . "default-src 'self'; "
+        . "base-uri 'self'; "
+        . "form-action 'self'; "
+        . "object-src 'none'; "
+        . "frame-ancestors 'none'; "
+        . "script-src 'self' 'nonce-{$nonce}' https://cdn.jsdelivr.net; "
+        . "style-src 'self' 'nonce-{$nonce}' https://cdn.jsdelivr.net; "
+        . "font-src 'self' https://cdn.jsdelivr.net data:; "
+        . "img-src 'self' data:; "
+        . "connect-src 'self' https://cdn.jsdelivr.net; "
+        . "upgrade-insecure-requests",
+        true
+    );
 }
 
 /* =========================
@@ -634,16 +660,19 @@ function mc_render_pretty_page(string $title, string $lead, string $detail = '',
     echo '<p class="mb-3 text-body-secondary">' . $safeLead . '</p>';
 
     if ($detail !== '') {
-        echo '<div class="alert alert-secondary mb-3" role="alert" style="white-space:pre-wrap">';
-        echo $safeDetail;
+        echo '<div class="alert alert-secondary mb-3" role="alert">';
+        echo nl2br($safeDetail, false);
         echo '</div>';
     }
 
     echo '<div class="d-grid gap-2 d-md-flex">';
     echo '<a class="btn btn-primary" href="' . $safeHome . '">Go to Home</a>';
-    echo '<button type="button" class="btn btn-outline-secondary" onclick="(function(){ if (history.length>1) history.back(); else location.href=\'' . $safeHome . '\'; })()">Back</button>';
-    echo '</div>';
+    $ref = (string)($_SERVER['HTTP_REFERER'] ?? '');
+    $ref = ($ref !== '' ? $ref : $home);
+    $safeRef = h($ref);
 
+    echo '<a class="btn btn-outline-secondary" href="' . $safeRef . '">Back</a>';
+    echo '</div>';
     echo '</div></div></div>';
     echo '</body></html>';
     exit;

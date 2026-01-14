@@ -17,6 +17,8 @@ mc_session_start();
 mc_mark_admin_session_from_basic_auth();
 mc_install_gate_or_redirect();
 
+$cspNonce = mc_csp_nonce();
+
 /* =========================
    CONFIG
    ========================= */
@@ -1136,7 +1138,7 @@ $totalHuman = format_bytes((int)$totalBytes);
             </div>
 
             <div class="progress mb-3 d-none" id="uploadProgressWrap" role="progressbar" aria-label="Upload progress">
-              <div class="progress-bar" id="uploadProgressBar" style="width:0%">0%</div>
+              <div class="progress-bar mc-w-0" id="uploadProgressBar">0%</div>
             </div>
 
             <button class="btn btn-primary w-100" type="submit" id="uploadBtn">Upload</button>
@@ -1493,20 +1495,20 @@ $totalHuman = format_bytes((int)$totalBytes);
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 
-<script>
-/* One boot payload for app.js (no other inline JS) */
-window.MC_BOOT = {
-  pageSize: <?=json_encode($PAGE_SIZE, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)?>,
-  csrf: <?=json_encode($_SESSION['csrf'], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)?>,
-  totalFiles: <?=json_encode($totalFiles, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)?>,
-  filesPage: <?=json_encode($filesPage, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)?>,
-  flashOk: <?=json_encode($flash['ok'], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)?>,
-  flashErr: <?=json_encode($flash['err'], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)?>,
-  maxPostBytes: <?=json_encode($MAX_POST_BYTES, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)?>,
-  maxFileBytes: <?=json_encode($MAX_FILE_BYTES, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)?>,
-  maxFileUploads: <?=json_encode($MAX_FILE_UPLOADS, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)?>
-};
-</script>
+<script nonce="<?=h($cspNonce)?>" type="application/json" id="mc-boot"><?=
+  json_encode([
+    'pageSize'       => $PAGE_SIZE,
+    'csrf'           => $_SESSION['csrf'],
+    'totalFiles'     => $totalFiles,
+    'filesPage'      => $filesPage,
+    'flashOk'        => $flash['ok'],
+    'flashErr'       => $flash['err'],
+    'maxPostBytes'   => $MAX_POST_BYTES,
+    'maxFileBytes'   => $MAX_FILE_BYTES,
+    'maxFileUploads' => $MAX_FILE_UPLOADS,
+  ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+?></script>
+
 <script src="app.js?v=<?=rawurlencode((string)($APP_VERSION ?? '1'))?>" defer></script>
 
 </body>

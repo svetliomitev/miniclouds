@@ -6,7 +6,9 @@ require_once __DIR__ . '/lib.php';
 mc_security_headers();
 mc_session_start();
 
-$APP_VERSION = '1.5.91';
+$nonce = mc_csp_nonce();
+
+$APP_VERSION = '1.6.94';
 
 /* =========================
    INSTALLER WIZARD (responsive)
@@ -211,7 +213,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') ==
                 $ht .= "ErrorDocument 404 " . $err404 . "\n\n";
 
                 /* public assets */
-                $ht .= "<FilesMatch \"^(?:app\\.js|style\\.css)$\">\n";
+                $ht .= "<FilesMatch \"^(?:app\\.js|style\\.css|miniclouds-icon\\.png)$\">\n";
                 $ht .= "  Require all granted\n";
                 $ht .= "</FilesMatch>\n\n";
 
@@ -279,10 +281,15 @@ $base = mc_base_uri();
 $rw   = mc_rewrite_base();
 $dirWritable = is_writable(__DIR__);
 
-echo '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">';
+echo '<!doctype html><html lang="en"><head>';
+echo '<meta charset="utf-8">';
+echo '<meta name="viewport" content="width=device-width, initial-scale=1">';
 echo '<title>MiniCloudS Installer</title>';
-echo '<style>
-  :root{
+echo '<link rel="icon" type="image/png" sizes="512x512" href="miniclouds-icon.png?v=' . rawurlencode((string)$APP_VERSION) . '">';
+echo '<link rel="apple-touch-icon" sizes="512x512" href="miniclouds-icon.png?v=' . rawurlencode((string)$APP_VERSION) . '">';
+/* installer has its own CSS, no bootstrap needed */
+echo '<style nonce="' . h($nonce) . '">
+    :root{
     --bg:#212529;
     --panel:#2b3035;
     --field:#212529;
@@ -292,17 +299,25 @@ echo '<style>
     --border2:rgba(255,255,255,.12);
     --btn:#0d6efd;
     --danger:#842029;
-  }
-  *{box-sizing:border-box}
-  body{margin:0;background:var(--bg);color:var(--text);font:16px/1.5 system-ui,-apple-system,Segoe UI,Roboto,Arial}
-  .wrap{max-width:1040px;margin:0 auto;padding:20px}
-  .top{padding:22px 0 10px}
-  .h1{font-size:24px;font-weight:600;margin:0 0 6px;letter-spacing:.2px}
-  .card{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:18px;box-shadow:none}
-  .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px}
-  @media (max-width:720px){.grid{grid-template-columns:1fr}}
-  label{display:block;margin:0 0 7px;color:#cbd5e1;font-weight:600}
-  input{
+    }
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--bg);color:var(--text);font:16px/1.5 system-ui,-apple-system,Segoe UI,Roboto,Arial}
+    .wrap{max-width:1040px;margin:0 auto;padding:20px}
+    .top{
+    padding:22px 0 10px;
+    }
+    .h1{
+    font-size:24px;
+    font-weight:600;
+    margin:0 0 6px;
+    letter-spacing:.2px;
+    line-height:1.1;
+    }
+    .card{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:18px;box-shadow:none}
+    .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px}
+    @media (max-width:720px){.grid{grid-template-columns:1fr}}
+    label{display:block;margin:0 0 7px;color:#cbd5e1;font-weight:600}
+    input{
     width:100%;
     padding:10px 12px;
     border-radius:8px;
@@ -311,16 +326,16 @@ echo '<style>
     color:var(--text);
     outline:none;
     font-size:15px;
-  }
-  input:focus{border-color:rgba(255,255,255,.35);box-shadow:none}
-  .help{color:var(--muted);font-size:13.5px;margin-top:7px}
-  .pillrow{display:flex;flex-wrap:wrap;gap:10px;margin-top:12px}
-  .pill{display:inline-flex;align-items:center;gap:8px;padding:7px 11px;border-radius:999px;border:1px solid var(--border2);background:rgba(255,255,255,.03);color:var(--muted);font-size:13px}
-  code{background:var(--field);border:1px solid var(--border2);padding:2px 8px;border-radius:10px;color:#cbd5e1}
-  .warn{margin-top:14px;padding:11px 12px;border-radius:12px;background:var(--danger);border:1px solid var(--border);color:var(--text)}
-  .alert{margin-top:14px;padding:11px 12px;border-radius:12px;background:var(--danger);border:1px solid var(--border);color:var(--text)}
-  .alert strong{font-weight:600}
-  .btn{
+    }
+    input:focus{border-color:rgba(255,255,255,.35);box-shadow:none}
+    .help{color:var(--muted);font-size:13.5px;margin-top:7px}
+    .pillrow{display:flex;flex-wrap:wrap;gap:10px;margin-top:12px}
+    .pill{display:inline-flex;align-items:center;gap:8px;padding:7px 11px;border-radius:999px;border:1px solid var(--border2);background:rgba(255,255,255,.03);color:var(--muted);font-size:13px}
+    code{background:var(--field);border:1px solid var(--border2);padding:2px 8px;border-radius:10px;color:#cbd5e1}
+    .warn{margin-top:14px;padding:11px 12px;border-radius:12px;background:var(--danger);border:1px solid var(--border);color:var(--text)}
+    .alert{margin-top:14px;padding:11px 12px;border-radius:12px;background:var(--danger);border:1px solid var(--border);color:var(--text)}
+    .alert strong{font-weight:600}
+    .btn{
     margin-top:16px;
     width:100%;
     border:1px solid transparent;
@@ -331,17 +346,17 @@ echo '<style>
     color:#fff;
     cursor:pointer;
     font-size:15px;
-  }
-  .btn:disabled{opacity:.65;cursor:not-allowed}
-  .note{margin-top:16px;padding:14px 14px;border-radius:12px;border:1px solid var(--border2);background:rgba(255,255,255,.03);color:var(--muted);font-size:13.5px}
-  .note b{color:var(--text);font-weight:600}
-  .note ul{margin:8px 0 0 18px;padding:0}
-  .note li{margin:4px 0}
+    }
+    .btn:disabled{opacity:.65;cursor:not-allowed}
+    .note{margin-top:16px;padding:14px 14px;border-radius:12px;border:1px solid var(--border2);background:rgba(255,255,255,.03);color:var(--muted);font-size:13.5px}
+    .note b{color:var(--text);font-weight:600}
+    .note ul{margin:8px 0 0 18px;padding:0}
+    .note li{margin:4px 0}
 
-  /* password input with show/hide button */
-  .pw{display:flex;gap:8px;align-items:stretch}
-  .pw input{flex:1;min-width:0}
-  .pwbtn{
+    /* password input with show/hide button */
+    .pw{display:flex;gap:8px;align-items:stretch}
+    .pw input{flex:1;min-width:0}
+    .pwbtn{
     padding:10px 12px;
     border-radius:8px;
     border:1px solid var(--border2);
@@ -350,21 +365,48 @@ echo '<style>
     font-weight:normal;
     cursor:pointer;
     white-space:nowrap;
-  }
-  .pwbtn:focus{outline:none;border-color:rgba(255,255,255,.35)}
+    }
+    .pwbtn:focus{outline:none;border-color:rgba(255,255,255,.35)}
 
-  /* kill Chrome autofill blue */
-  input:-webkit-autofill,
-  input:-webkit-autofill:hover,
-  input:-webkit-autofill:focus{
+    /* kill Chrome autofill blue */
+    input:-webkit-autofill,
+    input:-webkit-autofill:hover,
+    input:-webkit-autofill:focus{
     -webkit-text-fill-color: var(--text);
     -webkit-box-shadow: 0 0 0 1000px var(--field) inset;
     box-shadow: 0 0 0 1000px var(--field) inset;
     transition: background-color 9999s ease-in-out 0s;
-  }
+    }
+    /* installer icon before application name, inline */
+    .title-row{
+    display:flex;
+    align-items:center;
+    gap:8px;
+    }
+    .app-icon{
+    width:36px;
+    height:36px;
+    flex:0 0 36px;
+    display:block;
+    position:relative;
+    top:-1px; /* desktop default */
+    }
+    /* tablet */
+    @media (max-width: 992px){
+    .app-icon{ top: -2px; }
+    }
+    /* mobile */
+    @media (max-width: 480px){
+    .app-icon{ top: -3px; }
+    }
 </style>';
 echo '</head><body><div class="wrap">';
-echo '<div class="top"><div class="h1">MiniCloudS Installer</div></div>';
+echo '<div class="top">';
+echo '  <div class="title-row">';
+echo '    <img class="app-icon" src="miniclouds-icon.png?v=' . h($APP_VERSION) . '" alt="">';
+echo '    <div class="h1">MiniCloudS Installer</div>';
+echo '  </div>';
+echo '</div>';
 
 echo '<div class="card">';
 echo '<div class="pillrow">';
@@ -428,7 +470,7 @@ echo '</div>';
 
 echo '</div>';
 
-echo '<script>
+echo '<script nonce="' . h($nonce) . '">
 (function(){
   function togglePw(btn){
     var id = btn.getAttribute("data-target");
