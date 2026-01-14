@@ -76,7 +76,7 @@ Indexes are rebuilt only when needed, keeping runtime overhead low.
 > - `.htaccess` rules apply per instance
 > - isolated runtime state and files
 >
-> **Avoid the following setup:**
+> **Avoid the following multi instance setup:**
 
 ```text
 /public_html/{instance}
@@ -99,7 +99,7 @@ After installation, the application is ready to use, you just enter you username
 ## Directory Structure
 
 ```text
-/your-instance-root/
+/your-instance-web-path/
 ├─ index.php            Main application entry point (UI + admin actions)
 ├─ lib.php              Core helpers: security, sessions, CSRF, indexes
 ├─ link.php             Share-link endpoint (create / resolve shared URLs)
