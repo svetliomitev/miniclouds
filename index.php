@@ -53,13 +53,39 @@ function shared_index_count_txt(string $byDir): int {
 }
 
 /**
+ * Returns sorted list of sha256 hashes extracted from byname/*.txt filenames.
+ * byname files are expected as: {sha256(filename)}.txt
+ */
+function shared_byname_hashes_sorted(string $byDir): array {
+    $hashes = [];
+    $dh = @opendir($byDir);
+    if (!$dh) return $hashes;
+
+    while (($f = readdir($dh)) !== false) {
+        if ($f === '.' || $f === '..') continue;
+        if (!str_ends_with($f, '.txt')) continue;
+
+        $h = substr($f, 0, -4); // strip ".txt"
+        if (is_string($h) && preg_match('~^[a-f0-9]{64}$~i', $h)) {
+            $hashes[] = strtolower($h);
+        }
+    }
+    closedir($dh);
+
+    sort($hashes);
+    return $hashes;
+}
+
+/**
  * Rebuild shared_index.json from disk using byname/*.txt + links/*.json validation.
+ * Also prunes orphan shares where uploads/<filename> is missing.
+ *
  * Returns: associative set [sha256(filename) => 1]
  */
-function shared_index_rebuild_from_disk(string $linkDir, string $byDir): array {
+function shared_index_rebuild_from_disk(string $linkDir, string $byDir, string $uploadDir): array {
     $set = [];
 
-    if (!is_dir($byDir) || !is_dir($linkDir)) return $set;
+    if (!is_dir($byDir) || !is_dir($linkDir) || !is_dir($uploadDir)) return $set;
 
     $dh = @opendir($byDir);
     if (!$dh) return $set;
@@ -84,7 +110,9 @@ function shared_index_rebuild_from_disk(string $linkDir, string $byDir): array {
         }
 
         $jsonPath = $linkDir . '/' . $code . '.json';
-        if (!is_file($jsonPath) || @filesize($jsonPath) <= 0) {
+
+        $sz = @filesize($jsonPath);
+        if ($sz === false || $sz <= 0 || $sz > 262144) { // 256 KB safety cap
             @unlink($idxPath);
             continue;
         }
@@ -102,13 +130,24 @@ function shared_index_rebuild_from_disk(string $linkDir, string $byDir): array {
             continue;
         }
 
-        $expected = hash('sha256', $filename) . '.txt';
+        // NEW: prune orphan shares if upload file is missing
+        $up = $uploadDir . '/' . $filename;
+        if (!is_file($up)) {
+            // remove both markers best-effort
+            @unlink($idxPath);
+            if (is_file($jsonPath)) @unlink($jsonPath);
+            continue;
+        }
+
+        $h = hash('sha256', $filename);
+        $expected = $h . '.txt';
+
         if (!hash_equals($expected, $f)) {
             @unlink($idxPath);
             continue;
         }
 
-        $set[hash('sha256', $filename)] = 1;
+        $set[$h] = 1;
     }
 
     closedir($dh);
@@ -116,8 +155,10 @@ function shared_index_rebuild_from_disk(string $linkDir, string $byDir): array {
 }
 
 /**
- * Throttled shared-index consistency check (default: once per 120s).
- * If mismatch, rebuild shared_index.json from disk.
+ * Throttled shared-index consistency check.
+ * - Runs at most once per $interval seconds (APCu preferred; file fallback).
+ * - If mismatch (count or membership drift), rebuild shared_index.json from disk.
+ * - ALSO prunes orphan shares: byname+link records pointing to missing uploads/<filename>.
  *
  * Returns: ['set' => array, 'changed' => bool]
  */
@@ -125,42 +166,169 @@ function shared_index_throttled_consistency_check(
     string $cacheDir,
     string $linkDir,
     string $byDir,
+    string $uploadDir,
     array $currentSet
 ): array {
     $interval = 600;
     $now = time();
-    $throttleOk = false;
 
-    if (apcu_enabled()) {
+    $useApcu = apcu_enabled();
+
+    // Throttle (APCu preferred)
+    if ($useApcu) {
         $k = apcu_key('shared_index:consistency_at');
         $ok = false;
         $last = apcu_get($k, $ok);
         $last = ($ok && is_int($last)) ? $last : 0;
-        if (($now - $last) < $interval) return ['set' => $currentSet, 'changed' => false];
-        apcu_set($k, $now, $interval);
-        $throttleOk = true;
-    }
 
-    if (!$throttleOk) {
+        if (($now - $last) < $interval) {
+            return ['set' => $currentSet, 'changed' => false];
+        }
+        apcu_set($k, $now, $interval);
+    } else {
+        if (!is_dir($cacheDir)) @mkdir($cacheDir, 0755, true);
+
         $tf = $cacheDir . '/shared_index_consistency_at.txt';
         $last = 0;
+
         if (is_file($tf)) {
             $raw = @file_get_contents($tf);
             $last = is_string($raw) ? (int)trim($raw) : 0;
         }
-        if (($now - $last) < $interval) return ['set' => $currentSet, 'changed' => false];
+
+        if (($now - $last) < $interval) {
+            return ['set' => $currentSet, 'changed' => false];
+        }
+
         @file_put_contents($tf, (string)$now, LOCK_EX);
         @chmod($tf, 0644);
     }
 
+    // Cheap count check first (byname/*.txt count)
     $txtCount = shared_index_count_txt($byDir);
     if ($txtCount < 0) return ['set' => $currentSet, 'changed' => false];
 
-    $setCount = count($currentSet);
-    if ($txtCount !== $setCount) {
-        $rebuilt = shared_index_rebuild_from_disk($linkDir, $byDir);
-        shared_index_save($cacheDir, $rebuilt, true);
+    // Rebuild if count differs
+    if ($txtCount !== count($currentSet)) {
+        $rebuilt = shared_index_rebuild_from_disk($linkDir, $byDir, $uploadDir);
+        $complete = is_dir($byDir) && is_readable($byDir);
+        shared_index_save($cacheDir, $rebuilt, $complete);
         return ['set' => $rebuilt, 'changed' => true];
+    }
+
+    // Membership check (byname hashes vs set keys)
+    $byHashes = shared_byname_hashes_sorted($byDir);
+
+    $setKeys = [];
+    foreach (array_keys($currentSet) as $k) {
+        $k = strtolower((string)$k);
+        if (preg_match('~^[a-f0-9]{64}$~', $k)) $setKeys[] = $k;
+    }
+    sort($setKeys);
+
+    if ($byHashes !== $setKeys) {
+        $rebuilt = shared_index_rebuild_from_disk($linkDir, $byDir, $uploadDir);
+        $complete = is_dir($byDir) && is_readable($byDir);
+        shared_index_save($cacheDir, $rebuilt, $complete);
+        return ['set' => $rebuilt, 'changed' => true];
+    }
+
+    /**
+     * NEW: Orphan sweep (handles SSH/FTP deletes from uploads/).
+     * If uploads/<filename> is missing, remove byname/*.txt and links/*.json and drop from set.
+     *
+     * This is the missing piece: count+membership can still match while uploads changed.
+     */
+    if (!is_dir($uploadDir) || !is_dir($byDir) || !is_dir($linkDir)) {
+        return ['set' => $currentSet, 'changed' => false];
+    }
+
+    $changed = false;
+    $dh = @opendir($byDir);
+    if ($dh) {
+        while (($f = readdir($dh)) !== false) {
+            if ($f === '.' || $f === '..') continue;
+            if (!str_ends_with($f, '.txt')) continue;
+
+            $idxPath = $byDir . '/' . $f;
+            if (!is_file($idxPath)) continue;
+
+            $raw = @file_get_contents($idxPath);
+            if (!is_string($raw) || $raw === '') {
+                @unlink($idxPath);
+                $changed = true;
+                continue;
+            }
+
+            $code = trim(strtok($raw, "\r\n"));
+            if ($code === '' || !preg_match('~^[A-Za-z0-9_-]{6,32}$~', $code)) {
+                @unlink($idxPath);
+                $changed = true;
+                continue;
+            }
+
+            $jsonPath = $linkDir . '/' . $code . '.json';
+            $sz = @filesize($jsonPath);
+            if ($sz === false || $sz <= 0 || $sz > 262144) {
+                // broken link file -> drop index marker too
+                @unlink($idxPath);
+                if (is_file($jsonPath)) @unlink($jsonPath);
+                $changed = true;
+                continue;
+            }
+
+            $jraw = @file_get_contents($jsonPath);
+            $j = json_decode(is_string($jraw) ? $jraw : '', true);
+            if (!is_array($j)) {
+                @unlink($idxPath);
+                if (is_file($jsonPath)) @unlink($jsonPath);
+                $changed = true;
+                continue;
+            }
+
+            $filename = (string)($j['f'] ?? '');
+            if ($filename === '' || (isset($filename[0]) && $filename[0] === '.')) {
+                @unlink($idxPath);
+                if (is_file($jsonPath)) @unlink($jsonPath);
+                $changed = true;
+                continue;
+            }
+
+            // Orphan: upload missing => prune
+            $up = $uploadDir . '/' . $filename;
+            if (!is_file($up)) {
+                @unlink($idxPath);
+                if (is_file($jsonPath)) @unlink($jsonPath);
+
+                $h = hash('sha256', $filename);
+                if (isset($currentSet[$h])) unset($currentSet[$h]);
+
+                $changed = true;
+                continue;
+            }
+
+            // Also enforce that byname filename matches sha256(filename).txt
+            $h = hash('sha256', $filename);
+            $expected = $h . '.txt';
+            if (!hash_equals($expected, $f)) {
+                @unlink($idxPath);
+                $changed = true;
+                continue;
+            }
+
+            // Ensure set contains it (self-heal missing set entry)
+            if (!isset($currentSet[$h])) {
+                $currentSet[$h] = 1;
+                $changed = true;
+            }
+        }
+        closedir($dh);
+    }
+
+    if ($changed) {
+        $complete = is_dir($byDir) && is_readable($byDir);
+        shared_index_save($cacheDir, $currentSet, $complete);
+        return ['set' => $currentSet, 'changed' => true];
     }
 
     return ['set' => $currentSet, 'changed' => false];
@@ -180,41 +348,50 @@ function file_index_load(string $cacheDir): array {
     $mt = @filemtime($p);
     $mt = ($mt === false) ? 0 : (int)$mt;
 
-    $k = apcu_key('file_index');
-    $ok = false;
-    $cached = apcu_get($k, $ok);
-    if ($ok && is_array($cached) && (($cached['mt'] ?? -1) === $mt) && isset($cached['files']) && is_array($cached['files'])) {
-        return $cached['files'];
+    $useApcu = apcu_enabled();
+    $k = $useApcu ? apcu_key('file_index') : '';
+
+    if ($useApcu) {
+        $ok = false;
+        $cached = apcu_get($k, $ok);
+        if ($ok && is_array($cached)
+            && (($cached['mt'] ?? -1) === $mt)
+            && isset($cached['files']) && is_array($cached['files'])
+        ) {
+            return $cached['files'];
+        }
     }
 
     if (!is_file($p)) {
-        apcu_set($k, ['mt' => $mt, 'files' => []]);
+        if ($useApcu) apcu_set($k, ['mt' => $mt, 'files' => []], 0);
         return [];
     }
 
     $raw = @file_get_contents($p);
     if (!is_string($raw) || $raw === '') {
-        apcu_set($k, ['mt' => $mt, 'files' => []]);
+        if ($useApcu) apcu_set($k, ['mt' => $mt, 'files' => []], 0);
         return [];
     }
 
     $j = json_decode($raw, true);
     if (!is_array($j)) {
-        apcu_set($k, ['mt' => $mt, 'files' => []]);
+        if ($useApcu) apcu_set($k, ['mt' => $mt, 'files' => []], 0);
         return [];
     }
 
     $files = $j['files'] ?? null;
     if (!is_array($files)) {
-        apcu_set($k, ['mt' => $mt, 'files' => []]);
+        if ($useApcu) apcu_set($k, ['mt' => $mt, 'files' => []], 0);
         return [];
     }
 
     $out = [];
     foreach ($files as $it) {
         if (!is_array($it)) continue;
+
         $name = (string)($it['name'] ?? '');
         if ($name === '' || (isset($name[0]) && $name[0] === '.')) continue;
+
         $out[] = [
             'name'  => $name,
             'size'  => (int)($it['size'] ?? 0),
@@ -222,14 +399,41 @@ function file_index_load(string $cacheDir): array {
         ];
     }
 
-    apcu_set($k, ['mt' => $mt, 'files' => $out]);
+    if ($useApcu) apcu_set($k, ['mt' => $mt, 'files' => $out], 0);
     return $out;
 }
 
 function file_index_save(string $cacheDir, array $files, string $uploadDir = ''): void {
-    $sum = 0;
-    foreach ($files as $it) $sum += (int)($it['size'] ?? 0);
+    if (!is_dir($cacheDir)) @mkdir($cacheDir, 0755, true);
 
+    // Normalize + sanitize entries (defensive, keeps cache clean)
+    $norm = [];
+    $sum = 0;
+    $maxMtime = 0;
+
+    foreach ($files as $it) {
+        if (!is_array($it)) continue;
+
+        $name = (string)($it['name'] ?? '');
+        if ($name === '' || (isset($name[0]) && $name[0] === '.')) continue;
+
+        $size  = (int)($it['size'] ?? 0);
+        $mtime = (int)($it['mtime'] ?? 0);
+
+        if ($size < 0) $size = 0;
+        if ($mtime < 0) $mtime = 0;
+
+        $norm[] = [
+            'name'  => $name,
+            'size'  => $size,
+            'mtime' => $mtime,
+        ];
+
+        $sum += $size;
+        if ($mtime > $maxMtime) $maxMtime = $mtime;
+    }
+
+    // Optional informational directory mtime (never used for decisions)
     $dirMt = 0;
     if ($uploadDir !== '') {
         $mt = @filemtime($uploadDir);
@@ -237,17 +441,38 @@ function file_index_save(string $cacheDir, array $files, string $uploadDir = '')
     }
 
     $p = file_index_path($cacheDir);
+
     if (atomic_write_json($p, [
-        'v' => 2,
+        'v'            => 2,
         'generated_at' => gmdate('c'),
-        'dir_mtime' => $dirMt,
-        'total_files' => count($files),
-        'total_bytes' => $sum,
-        'files' => array_values($files),
+        'dir_mtime'    => $dirMt,          // informational only
+        'total_files'  => count($norm),
+        'total_bytes'  => $sum,
+        'max_mtime'    => $maxMtime,       // optional info/debug (not required by loader)
+        'files'        => array_values($norm),
     ])) {
         $mt = @filemtime($p);
         $mt = ($mt === false) ? 0 : (int)$mt;
-        apcu_set(apcu_key('file_index'), ['mt' => $mt, 'files' => $files]);
+
+        // Keep APCu cache in sync with file cache
+        if (apcu_enabled()) {
+            apcu_set(apcu_key('file_index'), ['mt' => $mt, 'files' => $norm], 0);
+        }
+
+        // IMPORTANT: keep fingerprint in sync too (prevents pointless rebuilds)
+        if ($uploadDir !== '') {
+            $fpNow = uploads_names_fingerprint($uploadDir);
+            if ($fpNow !== '') {
+                if (apcu_enabled()) {
+                    // long enough; next throttled check refreshes it anyway
+                    apcu_set(apcu_key('file_index:files_fp'), $fpNow, 1200);
+                } else {
+                    $fpFile = $cacheDir . '/file_index_files_fp.txt';
+                    @file_put_contents($fpFile, $fpNow, LOCK_EX);
+                    @chmod($fpFile, 0644);
+                }
+            }
+        }
     }
 }
 
@@ -278,36 +503,36 @@ function file_index_rebuild_from_disk(string $uploadDir): array {
 function file_index_ensure(string $cacheDir, string $uploadDir): array {
     $cachePath = file_index_path($cacheDir);
 
+    // Cache exists: try to reuse it safely (no dir_mtime decisions)
     if (is_file($cachePath)) {
-        $dirMtNow = @filemtime($uploadDir);
-        $dirMtNow = ($dirMtNow === false) ? 0 : (int)$dirMtNow;
-
         $raw = @file_get_contents($cachePath);
         if (is_string($raw) && $raw !== '') {
             $j = json_decode($raw, true);
             if (is_array($j)) {
-                $dirMtCached = (int)($j['dir_mtime'] ?? 0);
-
-                if ($dirMtCached > 0 && $dirMtNow > 0 && $dirMtCached !== $dirMtNow) {
-                    $rebuilt = file_index_rebuild_from_disk($uploadDir);
-                    file_index_save($cacheDir, $rebuilt, $uploadDir);
-                    return $rebuilt;
-                }
-
                 // Reuse the already-decoded JSON to avoid a second read/parse
                 $files = $j['files'] ?? null;
                 if (is_array($files)) {
                     $out = [];
                     foreach ($files as $it) {
                         if (!is_array($it)) continue;
+
                         $name = (string)($it['name'] ?? '');
                         if ($name === '' || (isset($name[0]) && $name[0] === '.')) continue;
+
                         $out[] = [
                             'name'  => $name,
                             'size'  => (int)($it['size'] ?? 0),
                             'mtime' => (int)($it['mtime'] ?? 0),
                         ];
                     }
+
+                    // Refresh APCu so file_index_load() is hot
+                    if (apcu_enabled()) {
+                        $mt = @filemtime($cachePath);
+                        $mt = ($mt === false) ? 0 : (int)$mt;
+                        apcu_set(apcu_key('file_index'), ['mt' => $mt, 'files' => $out], 0);
+                    }
+
                     return $out;
                 }
 
@@ -316,11 +541,13 @@ function file_index_ensure(string $cacheDir, string $uploadDir): array {
             }
         }
 
+        // Cache unreadable/corrupt: rebuild
         $rebuilt = file_index_rebuild_from_disk($uploadDir);
         file_index_save($cacheDir, $rebuilt, $uploadDir);
         return $rebuilt;
     }
 
+    // Cache missing: rebuild
     $rebuilt = file_index_rebuild_from_disk($uploadDir);
     file_index_save($cacheDir, $rebuilt, $uploadDir);
     return $rebuilt;
@@ -372,54 +599,193 @@ function uploads_count_and_max_mtime(string $uploadDir): array {
     return [$n, $max];
 }
 
+/**
+ * Fingerprint of uploadDir filenames (sorted, non-dot, files only).
+ * Returns '' on opendir failure.
+ */
+function uploads_names_fingerprint(string $uploadDir): string {
+    $names = [];
+    $dh = @opendir($uploadDir);
+    if (!$dh) return '';
+
+    while (($f = readdir($dh)) !== false) {
+        if ($f === '.' || $f === '..') continue;
+        if (isset($f[0]) && $f[0] === '.') continue;
+
+        $path = $uploadDir . '/' . $f;
+        if (!is_file($path)) continue;
+
+        $names[] = $f;
+    }
+    closedir($dh);
+
+    sort($names);
+
+    // incremental hash (avoids huge implode for many files)
+    $ctx = hash_init('sha256');
+    foreach ($names as $n) {
+        hash_update($ctx, $n);
+    }
+    return hash_final($ctx);
+}
+
 function file_index_throttled_consistency_check(string $cacheDir, string $uploadDir, array $currentIndex): array {
     $interval = 600;
-
     $now = time();
-    $throttleOk = false;
 
-    if (apcu_enabled()) {
+    $useApcu = apcu_enabled();
+
+    // Throttle (APCu preferred)
+    if ($useApcu) {
         $k = apcu_key('file_index:consistency_at');
         $ok = false;
         $last = apcu_get($k, $ok);
         $last = ($ok && is_int($last)) ? $last : 0;
-        if (($now - $last) < $interval) return $currentIndex;
-        apcu_set($k, $now, $interval);
-        $throttleOk = true;
-    }
 
-    if (!$throttleOk) {
+        if (($now - $last) < $interval) return $currentIndex;
+
+        apcu_set($k, $now, $interval);
+    } else {
+        if (!is_dir($cacheDir)) @mkdir($cacheDir, 0755, true);
+
         $tf = $cacheDir . '/file_index_consistency_at.txt';
         $last = 0;
+
         if (is_file($tf)) {
             $raw = @file_get_contents($tf);
             $last = is_string($raw) ? (int)trim($raw) : 0;
         }
+
         if (($now - $last) < $interval) return $currentIndex;
+
         @file_put_contents($tf, (string)$now, LOCK_EX);
         @chmod($tf, 0644);
     }
 
+    // Disk cheap stats
     [$diskCount, $diskMax] = uploads_count_and_max_mtime($uploadDir);
     if ($diskCount < 0) return $currentIndex;
 
-    $cachedCount = count($currentIndex);
-    if ($diskCount !== $cachedCount) {
+    // Count drift => rebuild
+    if ($diskCount !== count($currentIndex)) {
         $rebuilt = file_index_rebuild_from_disk($uploadDir);
         file_index_save($cacheDir, $rebuilt, $uploadDir);
         return $rebuilt;
     }
 
+    // Cached max mtime
     $cachedMax = 0;
     foreach ($currentIndex as $it) {
         $mt = (int)($it['mtime'] ?? 0);
         if ($mt > $cachedMax) $cachedMax = $mt;
     }
 
-    if ($diskMax > 0 && $cachedMax > 0 && $diskMax !== $cachedMax) {
+    // Max mtime drift => rebuild
+    if ($diskMax > 0 && $diskMax !== $cachedMax) {
         $rebuilt = file_index_rebuild_from_disk($uploadDir);
         file_index_save($cacheDir, $rebuilt, $uploadDir);
         return $rebuilt;
+    }
+
+    // Fingerprint of filenames on disk
+    $fpNow = uploads_names_fingerprint($uploadDir);
+    if ($fpNow === '') return $currentIndex;
+
+    // Fingerprint computed from currentIndex (in-memory)
+    $names = [];
+    foreach ($currentIndex as $it) {
+        $n = (string)($it['name'] ?? '');
+        if ($n === '' || (isset($n[0]) && $n[0] === '.')) continue;
+        $names[] = $n;
+    }
+    sort($names);
+    $ctx = hash_init('sha256');
+    foreach ($names as $n) hash_update($ctx, $n);
+    $fpFromIndex = hash_final($ctx);
+
+    if ($useApcu) {
+        $fpKey = apcu_key('file_index:files_fp');
+        $ok = false;
+        $prev = apcu_get($fpKey, $ok);
+        $prev = ($ok && is_string($prev)) ? $prev : '';
+
+        // always store current for next time
+        apcu_set($fpKey, $fpNow, 1200);
+
+        // NEW: if prev is empty (APCu restart), compare disk fp vs currentIndex fp and heal immediately
+        if ($prev === '' && $fpFromIndex !== '' && !hash_equals($fpFromIndex, $fpNow)) {
+            $rebuilt = file_index_rebuild_from_disk($uploadDir);
+            file_index_save($cacheDir, $rebuilt, $uploadDir);
+            return $rebuilt;
+        }
+
+        // Normal drift detection
+        if ($prev !== '' && !hash_equals($prev, $fpNow)) {
+            $rebuilt = file_index_rebuild_from_disk($uploadDir);
+            file_index_save($cacheDir, $rebuilt, $uploadDir);
+            return $rebuilt;
+        }
+
+        // Extra safety: if any cached name is missing on disk -> rebuild (covers edge cases)
+        $probe = 0;
+        foreach ($currentIndex as $it) {
+            $name = (string)($it['name'] ?? '');
+            if ($name === '' || (isset($name[0]) && $name[0] === '.')) continue;
+
+            if (!is_file($uploadDir . '/' . $name)) {
+                $rebuilt = file_index_rebuild_from_disk($uploadDir);
+                file_index_save($cacheDir, $rebuilt, $uploadDir);
+                return $rebuilt;
+            }
+
+            $probe++;
+            if ($probe >= 50) break;
+        }
+
+        return $currentIndex;
+    }
+
+    // File fallback fingerprint
+    if (!is_dir($cacheDir)) @mkdir($cacheDir, 0755, true);
+
+    $fpFile = $cacheDir . '/file_index_files_fp.txt';
+    $prev = '';
+
+    if (is_file($fpFile)) {
+        $raw = @file_get_contents($fpFile);
+        if (is_string($raw)) $prev = trim($raw);
+    }
+
+    @file_put_contents($fpFile, $fpNow, LOCK_EX);
+    @chmod($fpFile, 0644);
+
+    // NEW: same “prev empty” immediate heal in non-APCu mode
+    if ($prev === '' && $fpFromIndex !== '' && !hash_equals($fpFromIndex, $fpNow)) {
+        $rebuilt = file_index_rebuild_from_disk($uploadDir);
+        file_index_save($cacheDir, $rebuilt, $uploadDir);
+        return $rebuilt;
+    }
+
+    if ($prev !== '' && !hash_equals($prev, $fpNow)) {
+        $rebuilt = file_index_rebuild_from_disk($uploadDir);
+        file_index_save($cacheDir, $rebuilt, $uploadDir);
+        return $rebuilt;
+    }
+
+    // Extra safety (non-APCu): missing cached names
+    $probe = 0;
+    foreach ($currentIndex as $it) {
+        $name = (string)($it['name'] ?? '');
+        if ($name === '' || (isset($name[0]) && $name[0] === '.')) continue;
+
+        if (!is_file($uploadDir . '/' . $name)) {
+            $rebuilt = file_index_rebuild_from_disk($uploadDir);
+            file_index_save($cacheDir, $rebuilt, $uploadDir);
+            return $rebuilt;
+        }
+
+        $probe++;
+        if ($probe >= 50) break;
     }
 
     return $currentIndex;
@@ -676,10 +1042,22 @@ $sharedIdx = shared_index_load($CACHE_DIR);
 $sharedSet = is_array($sharedIdx['set'] ?? null) ? $sharedIdx['set'] : [];
 $sharedComplete = (bool)($sharedIdx['complete'] ?? false);
 
-$sh = shared_index_throttled_consistency_check($CACHE_DIR, $LINK_DIR, $BY_DIR, $sharedSet);
+$sh = shared_index_throttled_consistency_check($CACHE_DIR, $LINK_DIR, $BY_DIR, $UPLOAD_DIR, $sharedSet);
 if (!empty($sh['changed'])) {
     $sharedSet = is_array($sh['set'] ?? null) ? $sh['set'] : [];
-    $sharedComplete = true;
+    // We just rebuilt/saved, so "complete" is true if byDir is readable
+    $sharedComplete = (is_dir($BY_DIR) && is_readable($BY_DIR));
+}
+
+// If disk has no byname records, shared index is complete+empty.
+// This fixes the "complete stays false forever" case on fresh/empty installs.
+if (!$sharedComplete) {
+    $txtCountNow = shared_index_count_txt($BY_DIR);
+    if ($txtCountNow === 0) {
+        $sharedSet = [];
+        $sharedComplete = true;
+        shared_index_save($CACHE_DIR, $sharedSet, true);
+    }
 }
 
 /* JSON stats endpoint */
@@ -982,8 +1360,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     if ($indexChanged) file_index_save($CACHE_DIR, $fileIndex, $UPLOAD_DIR);
     if ($sharedChanged) {
-    // Preserve completeness unless we explicitly know the index is complete.
-    shared_index_save($CACHE_DIR, is_array($sharedSet) ? $sharedSet : [], $sharedComplete);
+        // Preserve completeness unless we explicitly know the index is complete.
+        shared_index_save($CACHE_DIR, is_array($sharedSet) ? $sharedSet : [], $sharedComplete);
     }
 
     $totalBytes = 0;
