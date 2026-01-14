@@ -70,12 +70,14 @@ Indexes are rebuilt only when needed, keeping runtime overhead low.
 ```text
 /public_html/{instance}
 /public_html/mycloud/{instance}
+```
 
 or
 
 ```text
 /public_html/{instance}
 /public_html/{instance}/mycloud/{instance}
+```
 
 Such structure would lead to confusion and unpredictable outcome in .htaccess rules, applied to your Apache behavior for the second MiniCloudS instances.
 
@@ -108,7 +110,7 @@ install.php
 app.js
 style.css
 miniclouds-icon.png
-
+```
 ---
 
 ## Security Notes
