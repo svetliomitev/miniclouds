@@ -46,7 +46,7 @@ Indexes are rebuilt only when needed, keeping runtime overhead low.
 
 ## Requirements
 
-- PHP **7.3+**
+- PHP **8.1+**
 - Apache with:
   - `mod_rewrite`
   - `.htaccess` support
