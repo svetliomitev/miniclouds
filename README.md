@@ -67,13 +67,15 @@ Indexes are rebuilt only when needed, keeping runtime overhead low.
    - `install_state.json`
 6. Actually you might want to have more than one instance of MiniCloudS just by installing it in several subdirectories in your web accessible path. MiniCloudS can be independent that way, does not need DB, its .htaccess rules apply per instance. Just avoid the following scenario:
 
-`/public_html/{instance}`
-`/public_html/mycloud/{instance}`
+```text
+/public_html/{instance}
+/public_html/mycloud/{instance}
 
 or
 
-`/public_html/{instance}`
-`/public_html/{instance}/mycloud/{instance}`
+```text
+/public_html/{instance}
+/public_html/{instance}/mycloud/{instance}
 
 Such structure would lead to confusion and unpredictable outcome in .htaccess rules, applied to your Apache behavior for the second MiniCloudS instances.
 
@@ -96,15 +98,16 @@ After installation, the application is ready to use, you just enter you username
 
 Runtime directories are created automatically if missing, so no need to create them manually. If you choose not to clone this repo, but upload files before installation, these are the files that you must have in your directory (web accessible):
 
-  `index.php`
-  `lib.php`
-  `link.php`
-  `download.php`
-  `error.php`
-  `install.php`
-  `app.js`
-  `style.css`
-  `miniclouds-icon.png`
+```text
+index.php
+lib.php
+link.php
+download.php
+error.php
+install.php
+app.js
+style.css
+miniclouds-icon.png
 
 ---
 
