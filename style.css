@@ -177,8 +177,8 @@
 .toast-close .toast-x:active{ transform: translateY(1px); }
 .toast-close .toast-x i{ font-size: 1.1rem; }
 
-#toastSearch{ cursor: pointer; user-select: none; }
-#toastSearch:active{ transform: translateY(1px); }
+#toastSearch.show{ cursor: pointer; user-select: none; }
+#toastSearch.show:active{ transform: translateY(1px); }
 
 /* =========================
    BACK TO TOP (fixed size, no distortion)

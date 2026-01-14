@@ -1249,7 +1249,7 @@ $totalHuman = format_bytes((int)$totalBytes);
           <div id="filesGrid" class="row g-2 <?= ($totalFiles > 0) ? '' : 'd-none' ?>">
             <?php foreach ($filesPage as $i => $f): ?>
               <?php $isShared = !empty($f['shared']); ?>
-              <div class="col-12 col-md-6" data-file-card="<?=h($f['name'])?>">
+              <div class="col-12 col-md-6" data-file-card="<?=h(rawurlencode($f['name']))?>">
                 <div class="file-card <?=($i % 2 === 1 ? 'alt' : '')?> <?= $isShared ? 'shared' : '' ?>"
                      data-shared="<?= $isShared ? '1' : '0' ?>"
                      data-url="">
@@ -1268,7 +1268,7 @@ $totalHuman = format_bytes((int)$totalBytes);
                         role="<?= $isShared ? 'button' : 'note' ?>"
                         tabindex="<?= $isShared ? '0' : '-1' ?>"
                         data-link-pill
-                        data-f="<?=h($f['name'])?>">
+                        data-f="<?=h(rawurlencode($f['name']))?>">
                         <span data-link-text>
                         <?= $isShared ? h('loading…') : h('File entry not shared') ?>
                         </span>
@@ -1277,12 +1277,12 @@ $totalHuman = format_bytes((int)$totalBytes);
 
                   <div class="file-actions">
                     <button class="btn btn-outline-secondary btn-sm" type="button"
-                            data-f="<?=h($f['name'])?>" data-share-btn>
+                            data-f="<?=h(rawurlencode($f['name']))?>" data-share-btn>
                       <?= $isShared ? 'Unshare' : 'Share' ?>
                     </button>
 
                     <button class="btn btn-outline-primary btn-sm" type="button"
-                            data-f="<?=h($f['name'])?>" data-download-btn>
+                            data-f="<?=h(rawurlencode($f['name']))?>" data-download-btn>
                       Download
                     </button>
 

@@ -112,8 +112,6 @@
     showMoreHint: document.getElementById('showMoreHint'),
 
     backToTop: document.getElementById('backToTop'),
-    limitsBtn: document.getElementById('mcLimitsBtn'),
-    limitsModal: document.getElementById('mcLimitsModal'),
     infoModal: document.getElementById('mcInfoModal')
   };
 
@@ -361,8 +359,8 @@
 
     var isAppend = !!opts.append;
 
-    // If nothing changed, don't re-show.
-    if (filterKey === st.keyLast) return;
+    // Dedupe only for non-append (append is user-driven feedback)
+    if (!isAppend && filterKey === st.keyLast) return;
     st.keyLast = filterKey;
 
     // clear any previous auto-hide
@@ -513,6 +511,10 @@
 
     var totalAll = Number(stats.total_files || 0);
     UI.setDeleteAllHasFiles(totalAll > 0);
+
+    // keep totals consistent in the UI (shown stays as-is)
+    var shownNow = (DOM.counts && DOM.counts.shown1) ? Number(DOM.counts.shown1.textContent || 0) : 0;
+    updateCounts(shownNow, totalAll);
 
     if (DOM.buttons.deleteAll) {
       if (totalAll <= 0) DOM.buttons.deleteAll.setAttribute('data-mc-empty','1');
@@ -1486,17 +1488,10 @@
     });
   }
 
-  function initLimitsModal(){
-    if (!DOM.limitsBtn || !DOM.limitsModal || !window.bootstrap) return;
-    L.on(DOM.limitsBtn, 'click', function(){
-      bootstrap.Modal.getOrCreateInstance(DOM.limitsModal).show();
-    });
-  }
-
   function initInfoModal(){
     if (!DOM.infoModal || !window.bootstrap) return;
 
-    DOM.infoModal.addEventListener('show.bs.modal', function(){
+    L.on(DOM.infoModal, 'show.bs.modal', function(){
       syncInfoModalFromUI();
     });
   }
@@ -1529,7 +1524,6 @@
   wireUpload();
   wireDelegatedFileActions();
   initBackToTop();
-  initLimitsModal();
   initInfoModal();
   refreshStats();
 })();
