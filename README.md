@@ -87,16 +87,22 @@ After installation, the application is ready to use, you just enter you username
 
 ## Directory Structure
 
-  - /uploads/ (Uploaded files)
-  - /links/ (Share link data)
-  - /links/byname/ (Reverse share index)
-  - /cache/ (Runtime caches)
-  - index.php (Main application)
-  - install.php (Installer)
-  - download.php (File downloads)
-  - link.php (Share / unshare endpoint)
-  - lib.php (Shared helpers)
-
+```text
+/your-instance-root/
+├─ index.php            Main application entry point (UI + admin actions)
+├─ lib.php              Core helpers: security, sessions, CSRF, indexes
+├─ link.php             Share-link endpoint (create / resolve shared URLs)
+├─ download.php         Secure file download handler (admin & shared access)
+├─ error.php            User-friendly error fallback page
+├─ install.php          Installer wizard (initial setup & configuration)
+├─ app.js               Client-side logic (AJAX, uploads, UI state)
+├─ style.css            Application styling (Bootstrap extensions only)
+├─ miniclouds-icon.png  Application icon (tabs, mobile install)
+├─ uploads/             Stored user files (runtime; auto-created)
+├─ links/               Shared-link storage (runtime; auto-created)
+│  └─ byname/           Filename → link index (runtime; auto-created)
+└─ cache/               Runtime cache & indexes (runtime; auto-created)
+```
 
 Runtime directories are created automatically if missing, so no need to create them manually. If you choose not to clone this repo, but upload files before installation, these are the files that you must have in your directory (web accessible):
 
