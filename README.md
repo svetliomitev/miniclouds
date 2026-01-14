@@ -76,7 +76,7 @@ Indexes are rebuilt only when needed, keeping runtime overhead low.
 > - `.htaccess` rules apply per instance
 > - isolated runtime state and files
 >
-> **Avoid the following setup:**
+> **Avoid the following multi instance setup:**
 
 ```text
 /public_html/{instance}
