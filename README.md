@@ -134,6 +134,7 @@ miniclouds-icon.png
 
 - Hardened PHP sessions
 - CSRF protection for all state-changing actions
+- Strict CSP with nonces
 - No public API exposure
 - No database credentials to leak
 - Designed for private and controlled environments
