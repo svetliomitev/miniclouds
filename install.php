@@ -8,7 +8,7 @@ mc_session_start();
 
 $nonce = mc_csp_nonce();
 
-$APP_VERSION = '1.6.94';
+$APP_VERSION = '1.8.4';
 
 /* =========================
    INSTALLER WIZARD (responsive)
@@ -66,10 +66,20 @@ $HTPASSWD = __DIR__ . '/.htpasswd';
 $baseUri  = mc_base_uri();
 $indexUrl = ($baseUri === '' ? '' : $baseUri) . '/index.php';
 
-/* If already installed, redirect away */
-if (mc_is_installed()) { // from lib.php
-    header('Location: ' . $indexUrl, true, 302);
-    exit;
+/* If already installed, install.php becomes a configurator (not blocked).
+   Require authenticated admin session (set after BasicAuth on index.php). */
+$alreadyInstalled = mc_is_installed(); // from lib.php
+$isFirstInstall = !$alreadyInstalled;
+
+if ($alreadyInstalled) {
+    // If BasicAuth is already satisfied for this request, allow access and mark session.
+    if (!empty($_SERVER['REMOTE_USER'])) {
+        $_SESSION['mc_admin_ok'] = true;
+    }
+    mc_require_admin_session_or_pretty_403(
+        'Installer is available only to authenticated admins.',
+        'Open index.php, login, then return to install.php to change password / page size / allowlist.'
+    );
 }
 
 /* -------------------------
@@ -85,6 +95,20 @@ $passVal     = '';
 $pass2Val    = '';
 
 $pageSize = 20; // validated integer copy
+
+if ($alreadyInstalled) {
+    $st = mc_read_state();
+    if (is_array($st)) {
+        if (!empty($st['app_name']) && is_string($st['app_name'])) {
+            $authNameVal = trim((string)$st['app_name']);
+        }
+        $ps = (int)($st['page_size'] ?? 20);
+        if ($ps < 20) $ps = 20;
+        if ($ps > 200) $ps = 200;
+        $pageSizeVal = (string)$ps;
+        $pageSize = $ps;
+    }
+}
 
 /* Not installed -> allow install */
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') === 'install') {
@@ -208,6 +232,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') ==
                 $ht .= "  Require all granted\n";
                 $ht .= "</Files>\n\n";
 
+                $ht .= "<Files \"install.php\">\n";
+                $ht .= "  AuthType Basic\n";
+                $ht .= "  AuthName \"" . $authNameSafe . "\"\n";
+                $ht .= "  AuthUserFile " . $HTPASSWD . "\n";
+                $ht .= "  <RequireAll>\n";
+                $ht .= "    Require valid-user\n";
+                $ht .= "    " . $indexIpRules . "\n";
+                $ht .= "  </RequireAll>\n";
+                $ht .= "</Files>\n\n";
+
                 $ht .= "ErrorDocument 401 " . $err401 . "\n";
                 $ht .= "ErrorDocument 403 " . $err403 . "\n";
                 $ht .= "ErrorDocument 404 " . $err404 . "\n\n";
@@ -263,6 +297,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') ==
                     }
 
                     if ($error === '') {
+
+                        // Initial index build only on first install (not on configurator run)
+                        if ($isFirstInstall) {
+                            $UPLOAD_DIR = __DIR__ . '/uploads';
+                            $LINK_DIR   = __DIR__ . '/links';
+                            $BY_DIR     = $LINK_DIR . '/byname';
+                            $CACHE_DIR  = __DIR__ . '/cache';
+
+                            if (!is_dir($UPLOAD_DIR)) @mkdir($UPLOAD_DIR, 0755, true);
+                            if (!is_dir($LINK_DIR))   @mkdir($LINK_DIR, 0755, true);
+                            if (!is_dir($BY_DIR))     @mkdir($BY_DIR, 0755, true);
+                            if (!is_dir($CACHE_DIR))  @mkdir($CACHE_DIR, 0755, true);
+
+                            $fileIndex = file_index_rebuild_from_disk($UPLOAD_DIR);
+                            file_index_save($CACHE_DIR, $fileIndex, $UPLOAD_DIR);
+
+                            $sharedSet = shared_index_rebuild_from_disk($LINK_DIR, $BY_DIR, $UPLOAD_DIR);
+                            $sharedComplete = (is_dir($BY_DIR) && is_readable($BY_DIR));
+                            shared_index_save($CACHE_DIR, $sharedSet, $sharedComplete);
+
+                            $fp = mc_uploads_signature_compute($UPLOAD_DIR);
+                            if (!empty($fp)) {
+                                mc_uploads_fingerprint_save($CACHE_DIR, $fp);
+                            }
+                        }
+
                         header('Location: ' . ($baseUri === '' ? '' : $baseUri) . '/index.php', true, 302);
                         exit;
                     }

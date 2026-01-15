@@ -18,7 +18,7 @@
   })();
   var PAGE_SIZE = Number(BOOT.pageSize || 20);
   var csrfToken = String(BOOT.csrf || '');
-  
+
   // CSP-safe: set progress width via CSS class (mc-w-0..mc-w-100), not inline style
   function setPctClass(el, pct){
     if (!el) return;
@@ -114,6 +114,7 @@
     footerTotal: document.getElementById('totalUploaded'),
 
     buttons: {
+      rebuildIndex: document.getElementById('rebuildIndexBtn'),
       deleteAll: document.getElementById('deleteAllBtn'),
       reinstall: document.getElementById('reinstallBtn'),
       uploadBtn: document.getElementById('uploadBtn'),
@@ -141,7 +142,12 @@
     showMoreHint: document.getElementById('showMoreHint'),
 
     backToTop: document.getElementById('backToTop'),
-    infoModal: document.getElementById('mcInfoModal')
+    infoModal: document.getElementById('mcInfoModal'),
+
+    indexChangedModal: document.getElementById('mcIndexChangedModal'),
+    rebuildModal: document.getElementById('mcRebuildModal'),
+    rebuildStatusText: document.getElementById('mcRebuildStatusText'),
+    rebuildSteps: document.getElementById('mcRebuildSteps')
   };
 
   /* =========================
@@ -258,6 +264,7 @@
     if (last < s.length) out += escapeHtml(s.slice(last));
     return out;
   }
+
   function syncInfoModalFromUI(){
     var infoFiles = document.getElementById('mcInfoFilesCount');
     var infoSize  = document.getElementById('mcInfoTotalSize');
@@ -268,6 +275,106 @@
 
     if (infoFiles && filesNow) infoFiles.textContent = String(filesNow).trim();
     if (infoSize && sizeNow) infoSize.textContent = String(sizeNow).trim();
+  }
+
+  /* =========================
+     INDEX CHANGED / REBUILD MODALS (blocking)
+     ========================= */
+  var __mcIndexChangedShown = false;
+  var __mcIndexChangedHard = false; // when true => UI stays disabled until rebuild
+
+  function showIndexChangedModal(){
+    if (__mcIndexChangedShown) return;
+    if (!DOM.indexChangedModal || !window.bootstrap) return;
+
+    __mcIndexChangedShown = true;
+    __mcIndexChangedHard = true;
+
+    // safety: remove orphan backdrops before showing
+    mcModalCleanup();
+
+    try {
+      var m = bootstrap.Modal.getOrCreateInstance(DOM.indexChangedModal, {
+        backdrop: 'static',
+        keyboard: false
+      });
+      m.show();
+    } catch (e) {}
+  }
+
+  function hideIndexChangedModal(){
+    // Try Bootstrap first
+    if (DOM.indexChangedModal && window.bootstrap) {
+      try {
+        var inst = bootstrap.Modal.getInstance(DOM.indexChangedModal) ||
+                  bootstrap.Modal.getOrCreateInstance(DOM.indexChangedModal);
+        inst.hide();
+      } catch (e) {}
+    }
+
+    // Fallback: hard-hide classes/state (in case bootstrap gets stuck)
+    if (DOM.indexChangedModal) {
+      DOM.indexChangedModal.classList.remove('show');
+      DOM.indexChangedModal.style.display = 'none';
+      DOM.indexChangedModal.setAttribute('aria-hidden', 'true');
+      DOM.indexChangedModal.removeAttribute('aria-modal');
+      DOM.indexChangedModal.removeAttribute('role');
+    }
+
+    mcModalCleanup();
+  }
+
+  function showRebuildModal(){
+    if (!DOM.rebuildModal || !window.bootstrap) return;
+    if (DOM.rebuildStatusText) DOM.rebuildStatusText.textContent = 'Rebuilding indexes…';
+
+    // safety: remove orphan backdrops before showing
+    mcModalCleanup();
+
+    try {
+      var m = bootstrap.Modal.getOrCreateInstance(DOM.rebuildModal, {
+        backdrop: 'static',
+        keyboard: false
+      });
+      m.show();
+    } catch (e) {}
+  }
+
+  function hideRebuildModal(){
+    // Try Bootstrap first
+    if (DOM.rebuildModal && window.bootstrap) {
+      try {
+        var inst = bootstrap.Modal.getInstance(DOM.rebuildModal) || bootstrap.Modal.getOrCreateInstance(DOM.rebuildModal);
+        inst.hide();
+      } catch (e) {}
+    }
+
+    // Fallback: hard-hide classes (in case bootstrap gets stuck)
+    if (DOM.rebuildModal) {
+      DOM.rebuildModal.classList.remove('show');
+      DOM.rebuildModal.style.display = 'none';
+      DOM.rebuildModal.setAttribute('aria-hidden', 'true');
+      DOM.rebuildModal.removeAttribute('aria-modal');
+      DOM.rebuildModal.removeAttribute('role');
+    }
+
+    mcModalCleanup();
+  }
+
+  function mcModalCleanup(){
+    // Remove any orphaned modal backdrops that block UI
+    var backs = document.querySelectorAll('.modal-backdrop');
+    for (var i = 0; i < backs.length; i++){
+      try { backs[i].parentNode.removeChild(backs[i]); } catch (e) {}
+    }
+
+    // If no modal is actually shown, clear modal-open state
+    var anyShown = document.querySelector('.modal.show');
+    if (!anyShown) {
+      document.body.classList.remove('modal-open');
+      try { document.body.style.removeProperty('overflow'); } catch (e2) {}
+      try { document.body.style.removeProperty('paddingRight'); } catch (e3) {}
+    }
   }
 
   /* =========================
@@ -299,16 +406,16 @@
   }
 
   function hideSearchResultsToast(){
-  var st = DOM.searchToast;
+    var st = DOM.searchToast;
 
-  if (__mcSearchToastTimer) { clearTimeout(__mcSearchToastTimer); __mcSearchToastTimer = 0; }
+    if (__mcSearchToastTimer) { clearTimeout(__mcSearchToastTimer); __mcSearchToastTimer = 0; }
 
-  if (st.scope) {
-    try { st.scope.dispose(); } catch (e0) {}
-    st.scope = null;
-  }
-  st.keyLast = null;
-  if (st.el) forceHide(st.el);
+    if (st.scope) {
+      try { st.scope.dispose(); } catch (e0) {}
+      st.scope = null;
+    }
+    st.keyLast = null;
+    if (st.el) forceHide(st.el);
   }
 
   function scrollToResultsAndHide(){
@@ -465,37 +572,42 @@
   var UI = {
     busy: false,
     _deleteAllHasFiles: (Number(BOOT.totalFiles || 0) > 0),
+
     setBusy: function(isBusy){
       UI.busy = !!isBusy;
 
-      setEnabled(DOM.buttons.reinstall, !UI.busy);
+      var hard = !!__mcIndexChangedHard;
 
-      if (DOM.upload.input) DOM.upload.input.disabled = UI.busy;
-      setEnabled(DOM.buttons.uploadBtn, !UI.busy);
+      // Rebuild Index is allowed even when hard-locked (but still blocked by busy).
+      setEnabled(DOM.buttons.rebuildIndex, !UI.busy);
+
+      setEnabled(DOM.buttons.reinstall, (!UI.busy && !hard));
+      setEnabled(DOM.buttons.deleteAll, (!UI.busy && !hard && !!UI._deleteAllHasFiles));
+      setEnabled(DOM.buttons.showMore, (!UI.busy && !hard));
+      setEnabled(DOM.buttons.searchClear, (!UI.busy && !hard));
+      setEnabled(DOM.buttons.flagsDropdownBtn, (!UI.busy && !hard));
+      setEnabled(DOM.buttons.uploadBtn, (!UI.busy && !hard));
+      if (DOM.upload.input) DOM.upload.input.disabled = (UI.busy || hard);
 
       // Search controls: DO NOT disable q (caret glitches)
       if (DOM.search.q) DOM.search.q.disabled = false;
-      if (DOM.search.from) DOM.search.from.disabled = UI.busy;
-      if (DOM.search.to) DOM.search.to.disabled = UI.busy;
-      setEnabled(DOM.buttons.flagsDropdownBtn, !UI.busy);
-      setEnabled(DOM.buttons.searchClear, !UI.busy);
-
-      setEnabled(DOM.buttons.showMore, !UI.busy);
+      if (DOM.search.from) DOM.search.from.disabled = (UI.busy || hard);
+      if (DOM.search.to) DOM.search.to.disabled = (UI.busy || hard);
 
       UI.applyBusyToGrid();
-      UI.applyDeleteAllPolicy();
     },
+
     applyBusyToGrid: function(){
       if (!DOM.grid) return;
       var nodes = DOM.grid.querySelectorAll('button, input, select, textarea');
-      for (var i = 0; i < nodes.length; i++) nodes[i].disabled = UI.busy;
+      var hard = !!__mcIndexChangedHard;
+      for (var i = 0; i < nodes.length; i++) nodes[i].disabled = (UI.busy || hard);
     },
+
     setDeleteAllHasFiles: function(hasFiles){
       UI._deleteAllHasFiles = !!hasFiles;
-      UI.applyDeleteAllPolicy();
-    },
-    applyDeleteAllPolicy: function(){
-      setEnabled(DOM.buttons.deleteAll, !UI.busy && !!UI._deleteAllHasFiles);
+      // keep button policy consistent even if caller doesn't call setBusy again
+      setEnabled(DOM.buttons.deleteAll, (!UI.busy && !__mcIndexChangedHard && !!UI._deleteAllHasFiles));
     }
   };
 
@@ -504,11 +616,14 @@
      ========================= */
   var query = { q:'', from:'', to:'', flags:'all' };
 
+  var bootFiles = Array.isArray(BOOT.filesPage) ? BOOT.filesPage : [];
+
   var pageState = {
-    offset: 0,
-    limit: PAGE_SIZE,
+    offset: bootFiles.length,                  // next offset to request
+    limit: PAGE_SIZE,                          // ALWAYS PAGE_SIZE
+    desired: Math.max(PAGE_SIZE, bootFiles.length || 0), // how many items we want to keep visible after mutation refresh
     total: Number(BOOT.totalFiles || 0),
-    files: Array.isArray(BOOT.filesPage) ? BOOT.filesPage : []
+    files: bootFiles
   };
 
   // URL fetch dedupe
@@ -520,6 +635,8 @@
   // list request sequencing
   var __mcListReqSeq = 0;
   var __mcListAbortCtl = null;
+  var __mcListSilent = 0;      // when >0, fetchList won't render/toast
+  var __mcListNoAbort = 0;     // when >0, fetchList won't abort previous (used for buffered paging)
 
   // stable URL base
   var __mcBaseHref = (function(){
@@ -535,6 +652,24 @@
      ========================= */
   function applyStats(stats){
     if (!stats) return;
+
+    // Hard-lock ONLY when drift is known AND drift detected.
+    // Also IMPORTANT: if server says "no change", CLEAR any previous hard-lock.
+    var changed = (Number(stats.index_changed || 0) === 1);
+    var known   = (Number(stats.index_changed_known || 0) === 1);
+
+    if (changed && known) {
+      showIndexChangedModal();
+      UI.setBusy(UI.busy);
+    } else {
+      // server is clean => unlock UI if it was previously hard-locked
+      if (__mcIndexChangedHard) {
+        __mcIndexChangedHard = false;
+        __mcIndexChangedShown = false;
+        hideIndexChangedModal();
+        UI.setBusy(UI.busy);
+      }
+    }
 
     if (stats.total_human && DOM.footerTotal) DOM.footerTotal.textContent = String(stats.total_human);
 
@@ -689,23 +824,23 @@
      SEARCH UI
      ========================= */
   function setFlagsUI(value, silent){
-  value = String(value || 'all');
-  if (!DOM.search.flagsBtn || !DOM.search.flagsLabel) return;
+    value = String(value || 'all');
+    if (!DOM.search.flagsBtn || !DOM.search.flagsLabel) return;
 
-  var prev = String(DOM.search.flagsBtn.getAttribute('data-value') || 'all');
+    var prev = String(DOM.search.flagsBtn.getAttribute('data-value') || 'all');
 
-  // Always ensure label is correct, but do NOT re-run query if no change.
-  DOM.search.flagsBtn.setAttribute('data-value', value);
-  DOM.search.flagsLabel.textContent = (value === 'shared') ? 'Shared only' : 'All files';
+    // Always ensure label is correct, but do NOT re-run query if no change.
+    DOM.search.flagsBtn.setAttribute('data-value', value);
+    DOM.search.flagsLabel.textContent = (value === 'shared') ? 'Shared only' : 'All files';
 
-  if (silent) return;
+    if (silent) return;
 
-  // No-op: same filter selected again => do nothing (no fetch, no toast).
-  if (prev === value) return;
+    // No-op: same filter selected again => do nothing (no fetch, no toast).
+    if (prev === value) return;
 
-  if (UI.busy) return;
-  readInputsIntoQuery();
-  runQuery(true);
+    if (UI.busy || __mcIndexChangedHard) return;
+    readInputsIntoQuery();
+    runQuery(true);
   }
 
   function readInputsIntoQuery(){
@@ -726,13 +861,29 @@
   /* =========================
      LIST FETCH
      ========================= */
+
+  function getVisibleCountNow(){
+    // Prefer rendered cards count (source of truth for the UI)
+    if (DOM.grid) {
+      var cards = DOM.grid.querySelectorAll('[data-file-card]');
+      if (cards && cards.length) return cards.length;
+    }
+    // fallback to state
+    return (pageState && Array.isArray(pageState.files)) ? pageState.files.length : PAGE_SIZE;
+  }
+
   function fetchList(offset, append){
     offset = Number(offset || 0);
     append = !!append;
 
+    var reqOffset = offset;
+    var reqAppend = append;
+
     var reqId = ++__mcListReqSeq;
 
+    if (!__mcListNoAbort) {
     if (__mcListAbortCtl) { try { __mcListAbortCtl.abort(); } catch (e0) {} }
+    }
     __mcListAbortCtl = (window.AbortController ? new AbortController() : null);
 
     var url;
@@ -741,7 +892,7 @@
 
     url.searchParams.set('ajax', 'list');
     url.searchParams.set('offset', String(offset));
-    url.searchParams.set('limit', String(pageState.limit));
+    url.searchParams.set('limit', String(PAGE_SIZE)); // ALWAYS installer page size
     if (query.q) url.searchParams.set('q', query.q);
     if (query.from) url.searchParams.set('from', query.from);
     if (query.to) url.searchParams.set('to', query.to);
@@ -771,34 +922,63 @@
       }
 
       pageState.total = Number(r.data.total || 0);
-      pageState.offset = Number(r.data.offset || 0);
 
-      if (append) pageState.files = pageState.files.concat(r.data.files);
-      else pageState.files = r.data.files;
+      // Preserve shared URLs across refresh: prefer DOM snapshot, then state snapshot
+      var oldUrlMap = indexExistingUrlsByName();
+      var domUrlMap = indexVisibleUrlsFromDom();
+      for (var k0 in domUrlMap) {
+        if (Object.prototype.hasOwnProperty.call(domUrlMap, k0)) oldUrlMap[k0] = domUrlMap[k0];
+      }
 
-      var terms = splitTerms(query.q || '');
-      updateCounts(pageState.files.length, pageState.total);
+      if (reqAppend) {
+        // Append exactly what the server returned for THIS page
+        pageState.files = pageState.files.concat(r.data.files);
+      } else {
+        // Replace list (reset search / clear / filter change / mutation-refresh page 1)
+        pageState.files = r.data.files;
+      }
 
-      var hasFilter = ((query.q && query.q.trim()) || query.from || query.to || (query.flags && query.flags !== 'all'));
-      if (hasFilter) {
-        if (pageState.total > 0) {
-          showResultsToast(
-            pageState.files.length,
-            pageState.total,
-            queryKey() + '|n=' + pageState.total + '|shown=' + pageState.files.length,
-            { append: append, ttl: 2000 }
-          );
+      // Next offset is deterministic: reqOffset + returnedCount (even if fewer than PAGE_SIZE)
+      var returned = r.data.files.length;
+      pageState.offset = reqOffset + returned;
+
+      // Re-apply known URLs so pills don't "reload" after any list refresh
+      for (var k = 0; k < pageState.files.length; k++) {
+        var row = pageState.files[k];
+        if (!row) continue;
+
+        var nm = String(row.name || '');
+        if (!nm) continue;
+
+        if (row.shared && (!row.url || String(row.url) === '') && oldUrlMap[nm]) {
+          row.url = oldUrlMap[nm];
+        }
+      }
+
+      if (!__mcListSilent) {
+        var terms = splitTerms(query.q || '');
+        updateCounts(pageState.files.length, pageState.total);
+
+        var hasFilter = ((query.q && query.q.trim()) || query.from || query.to || (query.flags && query.flags !== 'all'));
+        if (hasFilter) {
+          if (pageState.total > 0) {
+            showResultsToast(
+              pageState.files.length,
+              pageState.total,
+              queryKey() + '|n=' + pageState.total + '|shown=' + pageState.files.length,
+              { append: append, ttl: 2000 }
+            );
+          } else {
+            hideSearchResultsToast();
+          }
         } else {
           hideSearchResultsToast();
         }
-      } else {
-        hideSearchResultsToast();
+
+        var hm = r.data.has_more;
+        var hasMore = (hm === true) || (hm === 1) || (hm === '1');
+        renderFiles(pageState.files, pageState.total, terms, hasMore);
       }
-
-      var hm = r.data.has_more;
-      var hasMore = (hm === true) || (hm === 1) || (hm === '1');
-
-      renderFiles(pageState.files, pageState.total, terms, hasMore);
 
       return r.data;
     })
@@ -828,16 +1008,111 @@
       });
   }
 
+  // Mutation-friendly refresh:
+  // keep current visible count (orientation), but always page in PAGE_SIZE chunks.
+  function refreshToDesiredCount(toastTitle, toastMsg){
+    var desired = Math.max(PAGE_SIZE, Number(getVisibleCountNow() || 0));
+    pageState.desired = desired;
+
+    // buffered paging: do NOT render/toast until finished
+    __mcListSilent++;
+    __mcListNoAbort++;
+
+    // local accumulator
+    var all = [];
+    var total = 0;
+    var next = 0;
+    var lastHasMore = false;
+
+    function onePage(off){
+      return fetchListSafe(off, off > 0, toastTitle || 'Index', toastMsg || 'Could not refresh list (network/server error).')
+        .then(function(data){
+          if (!data || !data.files) {
+            // If fetchListSafe returns null, stop
+            return false;
+          }
+          // data.files exists only in the raw server JSON, but our fetchListSafe returns r.data
+          // which includes .files in your backend response.
+          return true;
+        });
+    }
+
+    // We can’t rely on fetchListSafe returning parsed files from fetchList (it returns r.data),
+    // so we will read from pageState after each call (fetchList already merged into pageState.files).
+    // To buffer correctly, we re-run fetch but keep silent, then render once at the end.
+
+    // Reset state for a fresh rebuild in memory
+    pageState.files = [];
+    pageState.offset = 0;
+
+    function loop(){
+      return fetchListSafe(next, next > 0, toastTitle || 'Index', toastMsg || 'Could not refresh list (network/server error).')
+        .then(function(resp){
+          if (!resp) return null;
+
+          // After fetchListSafe, pageState.files contains merged list so far,
+          // pageState.total is set, pageState.offset advanced.
+          total = Number(pageState.total || 0);
+          next = Number(pageState.offset || 0);
+
+          // Determine hasMore from resp.has_more (server field)
+          var hm = resp.has_more;
+          lastHasMore = (hm === true) || (hm === 1) || (hm === '1');
+
+          if (pageState.files.length >= desired) return null;
+          if (pageState.files.length >= total) return null;
+          if (!lastHasMore) return null;
+
+          return loop();
+        });
+    }
+
+    return loop()
+      .finally(function(){
+        __mcListSilent = Math.max(0, __mcListSilent - 1);
+        __mcListNoAbort = Math.max(0, __mcListNoAbort - 1);
+      })
+      .then(function(){
+        // render once (no flicker)
+        var terms = splitTerms(query.q || '');
+        updateCounts(pageState.files.length, pageState.total);
+
+        var hasFilter = ((query.q && query.q.trim()) || query.from || query.to || (query.flags && query.flags !== 'all'));
+        if (hasFilter) {
+          if (pageState.total > 0) {
+            showResultsToast(
+              pageState.files.length,
+              pageState.total,
+              queryKey() + '|n=' + pageState.total + '|shown=' + pageState.files.length,
+              { append: false, ttl: 2000 }
+            );
+          } else {
+            hideSearchResultsToast();
+          }
+        } else {
+          hideSearchResultsToast();
+        }
+
+        // Use last known hasMore (best effort)
+        renderFiles(pageState.files, pageState.total, terms, !!lastHasMore);
+        return null;
+      });
+  }
+
   function runQuery(reset, opts){
     reset = !!reset;
     opts = opts || {};
     var manageBusy = (opts.manageBusy !== false);
+
+    if (__mcIndexChangedHard) return Promise.resolve(null);
 
     if (reset) {
       if (DOM.showMoreWrap) DOM.showMoreWrap.classList.add('d-none');
       if (DOM.showMoreHint) DOM.showMoreHint.textContent = '';
       pageState.offset = 0;
       pageState.files = [];
+      pageState.limit = PAGE_SIZE; // keep state consistent
+      pageState.desired = PAGE_SIZE;
     }
 
     if (manageBusy) UI.setBusy(true);
@@ -873,6 +1148,15 @@
 
       var fd = new FormData(form);
       var actionName = String(fd.get('action') || '');
+      var isRebuild = (actionName === 'rebuild_index');
+
+      if (isRebuild) {
+        showRebuildModal();
+      } else if (__mcIndexChangedHard) {
+        // hard lock: only rebuild allowed
+        showIndexChangedModal();
+        return;
+      }
 
       UI.setBusy(true);
 
@@ -930,14 +1214,18 @@
         if (r.data && r.data.stats) applyStats(r.data.stats);
         else refreshStats();
 
-        if (actionName === 'delete_all') {
+        var isClearAction = (actionName === 'delete_all');
+
+        // delete_all intentionally resets the UI
+        if (isClearAction) {
           clearInputs();
+          readInputsIntoQuery();
+          return runQuery(true, { manageBusy:false });
         }
 
+        // For all other mutations (delete_one etc.), keep visible count but page by PAGE_SIZE
         readInputsIntoQuery();
-
-        // Keep busy until list refresh completes (manageBusy:false here!)
-        return runQuery(true, { manageBusy:false });
+        return refreshToDesiredCount('Index', 'Could not refresh list (network/server error).');
       })
       .catch(function(){
         if (!__mcNavigating) {
@@ -946,7 +1234,20 @@
         return null;
       })
       .finally(function(){
+        if (__mcNavigating) return;
+
+        // Always end busy for ALL ajax form actions
         UI.setBusy(false);
+
+        // Always hide rebuild modal if it was shown (even if request failed)
+        if (isRebuild) hideRebuildModal();
+
+        // Always cleanup any orphaned backdrops / modal-open state
+        mcModalCleanup();
+
+        // After unlocking UI, do best-effort stats refresh.
+        // (Do NOT gate unlocking on this; it can fail and should not block UI.)
+        refreshStats();
       });
     }
 
@@ -1012,6 +1313,10 @@
 
       if (UI.busy) {
         showToast('info', 'Busy', 'Another operation is in progress. Please wait.');
+        return;
+      }
+      if (__mcIndexChangedHard) {
+        showIndexChangedModal();
         return;
       }
 
@@ -1086,7 +1391,7 @@
           setProgress(100);
           setTimeout(resetProgress, 600);
 
-          // keep busy until list refresh completes
+          // keep busy until list refresh completes (upload is a full reset)
           runQuery(true, { manageBusy:false }).finally(finishUpload);
         } else {
           showToast('danger', 'Upload', 'Upload failed (server error).');
@@ -1114,6 +1419,48 @@
   /* =========================
      SHARE / LINKS
      ========================= */
+
+  // Preserve already-known shared URLs across list refreshes (from pageState)
+  function indexExistingUrlsByName(){
+    var map = Object.create(null);
+    for (var i = 0; i < pageState.files.length; i++) {
+      var it = pageState.files[i];
+      if (!it) continue;
+      var n = String(it.name || '');
+      if (!n) continue;
+      if (it.shared && it.url) map[n] = String(it.url);
+    }
+    return map;
+  }
+
+  // Stronger: preserve URLs from the current DOM pills (survives even if pageState has no urls)
+  function indexVisibleUrlsFromDom(){
+    var map = Object.create(null);
+    if (!DOM.grid) return map;
+
+    var cards = DOM.grid.querySelectorAll('.file-card[data-shared="1"]');
+    for (var i = 0; i < cards.length; i++) {
+      var card = cards[i];
+      var wrapper = card.closest('[data-file-card]');
+      if (!wrapper) continue;
+
+      var key = String(wrapper.getAttribute('data-file-card') || '');
+      var fn = decName(key);
+      if (!fn) continue;
+
+      var u = String(card.getAttribute('data-url') || '').trim();
+      if (!u) {
+        // fallback: read visible text if data-url isn't set
+        var span = wrapper.querySelector('[data-link-text]');
+        if (span) u = String(span.textContent || '').trim();
+        if (u === 'loading…') u = '';
+      }
+
+      if (u) map[fn] = u;
+    }
+    return map;
+  }
+
   async function getShortUrl(filename, mode){
     mode = String(mode || 'make_link');
 
@@ -1264,6 +1611,10 @@
       showToast('info', 'Busy', 'Another operation is in progress. Please wait.');
       return;
     }
+    if (__mcIndexChangedHard) {
+      showIndexChangedModal();
+      return;
+    }
 
     var key = String(pill.getAttribute('data-f') || '');
     var fn = decName(key);
@@ -1294,6 +1645,8 @@
 
   async function toggleShareByFilename(file){
     if (UI.busy) { showToast('info', 'Busy', 'Another operation is in progress. Please wait.'); return; }
+    if (__mcIndexChangedHard) { showIndexChangedModal(); return; }
+
     file = String(file || '');
     if (!file) return;
 
@@ -1313,7 +1666,11 @@
         await navigator.clipboard.writeText(url);
         showToast('success', 'Shared link', 'Shared link copied.');
         readInputsIntoQuery();
-        if (query.flags === 'shared') await runQuery(true, { manageBusy:false });
+
+        // If in shared-only mode, new share should appear and ordering may change => refresh to keep orientation
+        if (query.flags === 'shared') {
+          await refreshToDesiredCount('Index', 'Could not refresh list (network/server error).');
+        }
       } catch (e) {
         showToast('danger', 'Shared link', (e && e.message) ? e.message : 'Failed to create/copy link.');
       } finally {
@@ -1342,8 +1699,7 @@
       else refreshStats();
 
       readInputsIntoQuery();
-      await runQuery(true, { manageBusy:false });
-
+      await refreshToDesiredCount('Index', 'Could not refresh list (network/server error).');
     } catch (e2) {
       showToast('danger', 'Shared link', 'Shared link delete failed.');
     } finally {
@@ -1353,6 +1709,8 @@
 
   async function downloadByFilename(file){
     if (UI.busy) { showToast('info', 'Busy', 'Another operation is in progress. Please wait.'); return; }
+    if (__mcIndexChangedHard) { showIndexChangedModal(); return; }
+
     file = String(file || '');
     if (!file) return;
 
@@ -1442,7 +1800,7 @@
     }
 
     var onType = debounce(function(){
-      if (UI.busy) return;
+      if (UI.busy || __mcIndexChangedHard) return;
       readInputsIntoQuery();
       runQuery(true);
     }, 160);
@@ -1451,7 +1809,7 @@
 
     if (DOM.search.from) {
       L.on(DOM.search.from, 'change', function(){
-        if (UI.busy) return;
+        if (UI.busy || __mcIndexChangedHard) return;
         readInputsIntoQuery();
         runQuery(true);
       });
@@ -1459,7 +1817,7 @@
 
     if (DOM.search.to) {
       L.on(DOM.search.to, 'change', function(){
-        if (UI.busy) return;
+        if (UI.busy || __mcIndexChangedHard) return;
         readInputsIntoQuery();
         runQuery(true);
       });
@@ -1471,13 +1829,14 @@
       if (!(t instanceof Element)) return;
       var item = t.closest('[data-flag]');
       if (!item) return;
+      if (UI.busy || __mcIndexChangedHard) return;
       var v = String(item.getAttribute('data-flag') || 'all');
       setFlagsUI(v, false);
     });
 
     if (DOM.buttons.searchClear) {
       L.on(DOM.buttons.searchClear, 'click', function(){
-        if (UI.busy) return;
+        if (UI.busy || __mcIndexChangedHard) return;
         clearInputs();
         hideSearchResultsToast();
         readInputsIntoQuery();
@@ -1486,14 +1845,15 @@
       });
     }
 
-    // Show more: uniform safe behavior (resolve null on failure, no unhandled rejection)
+    // Show more: predictable paging: offset comes from server pagination state, not from current length
     if (DOM.buttons.showMore) {
       L.on(DOM.buttons.showMore, 'click', function(){
-        if (UI.busy) return;
-        pageState.offset = pageState.files.length;
+        if (UI.busy || __mcIndexChangedHard) return;
+
+        var nextOffset = Number(pageState.offset || 0);
 
         UI.setBusy(true);
-        fetchListSafe(pageState.offset, true, 'Index', 'Could not load more items.')
+        fetchListSafe(nextOffset, true, 'Index', 'Could not load more items.')
           .finally(function(){ UI.setBusy(false); });
       });
     }
@@ -1526,8 +1886,16 @@
   }
 
   function initInitialPaint(){
+    // If server says index changed/missing at boot, hard-lock UI and show modal.
+    if (Number(BOOT.indexChanged || 0) === 1) {
+      showIndexChangedModal();
+    }
+
     // ensure delete-all policy is correct even before stats refresh completes
     UI.setDeleteAllHasFiles(pageState.total > 0);
+
+    // apply initial lock/busy policy to buttons
+    UI.setBusy(false);
 
     updateCounts(pageState.files.length, pageState.total);
 

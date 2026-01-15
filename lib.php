@@ -136,6 +136,14 @@ function h(string $s): string {
     return htmlspecialchars($s, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 }
 
+function format_bytes(int $bytes): string {
+    $units = ['B','KB','MB','GB','TB'];
+    $i = 0;
+    $v = (float)$bytes;
+    while ($v >= 1024 && $i < count($units) - 1) { $v /= 1024; $i++; }
+    return ($i === 0 ? (string)(int)$v : number_format($v, 2)) . ' ' . $units[$i];
+}
+
 if (!function_exists('str_ends_with')) {
     function str_ends_with(string $haystack, string $needle): bool {
         if ($needle === '') return true;
@@ -405,6 +413,188 @@ function atomic_write_json(string $path, array $data): bool {
 }
 
 /* =========================
+   FILE INDEX
+   - Stored in cache/file_index.json
+   - No self-heal here (rebuild only via explicit action)
+   ========================= */
+
+function file_index_path(string $cacheDir): string {
+    return rtrim($cacheDir, '/\\') . '/file_index.json';
+}
+
+/**
+ * Load file index. Returns [] if missing/invalid.
+ * Format: [ ['name'=>string,'size'=>int,'mtime'=>int], ... ]
+ */
+function file_index_load(string $cacheDir): array {
+    $p = file_index_path($cacheDir);
+    $mt = @filemtime($p);
+    $mt = ($mt === false) ? 0 : (int)$mt;
+
+    $k = apcu_key('file_index');
+    $ok = false;
+    $cached = apcu_get($k, $ok);
+
+    if ($ok && is_array($cached)
+        && (($cached['mt'] ?? -1) === $mt)
+        && isset($cached['list']) && is_array($cached['list'])
+    ) {
+        return $cached['list'];
+    }
+
+    if (!is_file($p)) {
+        apcu_set($k, ['mt' => $mt, 'list' => []], 0);
+        return [];
+    }
+
+    $raw = @file_get_contents($p);
+    if (!is_string($raw) || $raw === '') {
+        apcu_set($k, ['mt' => $mt, 'list' => []], 0);
+        return [];
+    }
+
+    $j = json_decode($raw, true);
+    if (!is_array($j)) {
+        apcu_set($k, ['mt' => $mt, 'list' => []], 0);
+        return [];
+    }
+
+    $out = [];
+    foreach ($j as $it) {
+        if (!is_array($it)) continue;
+        $name = (string)($it['name'] ?? '');
+        if ($name === '' || (isset($name[0]) && $name[0] === '.')) continue;
+
+        $out[] = [
+            'name'  => $name,
+            'size'  => (int)($it['size'] ?? 0),
+            'mtime' => (int)($it['mtime'] ?? 0),
+        ];
+    }
+
+    usort($out, function($a, $b){
+        return strcmp((string)$a['name'], (string)$b['name']);
+    });
+
+    apcu_set($k, ['mt' => $mt, 'list' => $out], 0);
+    return $out;
+}
+
+/**
+ * Save file index to cache/file_index.json (atomic).
+ */
+function file_index_save(string $cacheDir, array $fileIndex): bool {
+    $p = file_index_path($cacheDir);
+
+    $out = [];
+    foreach ($fileIndex as $it) {
+        if (!is_array($it)) continue;
+        $name = (string)($it['name'] ?? '');
+        if ($name === '' || (isset($name[0]) && $name[0] === '.')) continue;
+
+        $out[] = [
+            'name'  => $name,
+            'size'  => (int)($it['size'] ?? 0),
+            'mtime' => (int)($it['mtime'] ?? 0),
+        ];
+    }
+
+    usort($out, function($a, $b){
+        return strcmp((string)$a['name'] ?? '', (string)$b['name'] ?? '');
+    });
+
+    $ok = atomic_write_json($p, $out);
+    if ($ok) {
+        $mt = @filemtime($p);
+        $mt = ($mt === false) ? 0 : (int)$mt;
+        apcu_set(apcu_key('file_index'), ['mt' => $mt, 'list' => $out], 0);
+    }
+    return $ok;
+}
+
+/**
+ * Rebuild file index from disk (uploads directory).
+ * Uses DirectoryIterator.
+ */
+function file_index_rebuild_from_disk(string $uploadDir): array {
+    if (!is_dir($uploadDir) || !is_readable($uploadDir)) return [];
+
+    $out = [];
+    try {
+        $it = new DirectoryIterator($uploadDir);
+        foreach ($it as $fi) {
+            if ($fi->isDot()) continue;
+            if (!$fi->isFile()) continue;
+
+            $name = (string)$fi->getFilename();
+            if ($name === '' || (isset($name[0]) && $name[0] === '.')) continue;
+
+            $size = (int)$fi->getSize();
+            $mtime = (int)$fi->getMTime();
+            if ($size < 0) $size = 0;
+            if ($mtime < 0) $mtime = 0;
+
+            $out[] = ['name' => $name, 'size' => $size, 'mtime' => $mtime];
+        }
+    } catch (\Throwable $e) {
+        return [];
+    }
+
+    usort($out, function($a, $b){
+        return strcmp((string)$a['name'], (string)$b['name']);
+    });
+
+    return $out;
+}
+
+/**
+ * Upsert (insert or replace) one record by name.
+ * Returns new array (keeps it functional like your call site expects).
+ */
+function file_index_upsert(array $fileIndex, array $row): array {
+    $name = (string)($row['name'] ?? '');
+    if ($name === '' || (isset($name[0]) && $name[0] === '.')) return $fileIndex;
+
+    $size = (int)($row['size'] ?? 0);
+    $mtime = (int)($row['mtime'] ?? 0);
+
+    $found = false;
+    for ($i = 0; $i < count($fileIndex); $i++) {
+        if (!is_array($fileIndex[$i])) continue;
+        if ((string)($fileIndex[$i]['name'] ?? '') === $name) {
+            $fileIndex[$i] = ['name'=>$name, 'size'=>$size, 'mtime'=>$mtime];
+            $found = true;
+            break;
+        }
+    }
+    if (!$found) {
+        $fileIndex[] = ['name'=>$name, 'size'=>$size, 'mtime'=>$mtime];
+    }
+
+    usort($fileIndex, function($a, $b){
+        return strcmp((string)($a['name'] ?? ''), (string)($b['name'] ?? ''));
+    });
+
+    return $fileIndex;
+}
+
+/**
+ * Remove record by name.
+ */
+function file_index_remove_name(array $fileIndex, string $name): array {
+    $name = (string)$name;
+    if ($name === '') return $fileIndex;
+
+    $out = [];
+    foreach ($fileIndex as $it) {
+        if (!is_array($it)) continue;
+        if ((string)($it['name'] ?? '') === $name) continue;
+        $out[] = $it;
+    }
+    return $out;
+}
+
+/* =========================
    SHARED HELPERS (byname + shared_index.json)
    ========================= */
 
@@ -523,6 +713,578 @@ function shared_index_add_filename_preserve_complete(string $cacheDir, string $f
 }
 
 /* =========================
+   SHARED INDEX
+   - Stored in cache/shared_index.json (set + complete flag)
+   - byname dir stores per-filename mapping to link code
+   ========================= */
+
+function shared_index_count_txt(string $byDir): int {
+    if (!is_dir($byDir) || !is_readable($byDir)) return 0;
+    $n = 0;
+    try {
+        $it = new DirectoryIterator($byDir);
+        foreach ($it as $fi) {
+            if ($fi->isDot()) continue;
+            if (!$fi->isFile()) continue;
+            $name = (string)$fi->getFilename();
+            if ($name === '') continue;
+            if (!str_ends_with($name, '.txt')) continue;
+            $n++;
+        }
+    } catch (\Throwable $e) {
+        return 0;
+    }
+    return $n;
+}
+
+/**
+ * Rebuild shared set from disk using linkDir/*.json as source of truth.
+ * Validates:
+ * - json file name is code (or code inside json)
+ * - json contains 'f' filename
+ * - upload exists
+ * Recreates byname/*.txt for valid records.
+ *
+ * Returns: shared set array (for shared_index_save).
+ */
+function shared_index_rebuild_from_disk(string $linkDir, string $byDir, string $uploadDir): array {
+    if (!is_dir($linkDir)) @mkdir($linkDir, 0755, true);
+    if (!is_dir($byDir)) @mkdir($byDir, 0755, true);
+
+    // Clear byname dir (safe: it's rebuild)
+    try {
+        $it = new DirectoryIterator($byDir);
+        foreach ($it as $fi) {
+            if ($fi->isDot()) continue;
+            if (!$fi->isFile()) continue;
+            $fn = (string)$fi->getFilename();
+            if ($fn === '' || !str_ends_with($fn, '.txt')) continue;
+            @unlink($byDir . '/' . $fn);
+        }
+    } catch (\Throwable $e) {
+        // ignore
+    }
+
+    $set = [];
+    try {
+        $it = new DirectoryIterator($linkDir);
+        foreach ($it as $fi) {
+            if ($fi->isDot()) continue;
+            if (!$fi->isFile()) continue;
+
+            $fname = (string)$fi->getFilename();
+            if ($fname === '' || !str_ends_with($fname, '.json')) continue;
+
+            $path = $linkDir . '/' . $fname;
+            $raw = @file_get_contents($path);
+            if (!is_string($raw) || $raw === '') { @unlink($path); continue; }
+
+            $j = json_decode($raw, true);
+            if (!is_array($j)) { @unlink($path); continue; }
+
+            $code = (string)($j['c'] ?? '');
+            if ($code === '') {
+                // fallback: derive from filename "<code>.json"
+                $code = substr($fname, 0, -5);
+            }
+            if (!preg_match('~^[A-Za-z0-9_-]{6,32}$~', $code)) { @unlink($path); continue; }
+
+            $file = (string)($j['f'] ?? '');
+            $file = safe_basename($file);
+            if ($file === '' || (isset($file[0]) && $file[0] === '.')) { @unlink($path); continue; }
+
+            // upload must exist
+            $up = rtrim($uploadDir, '/\\') . '/' . $file;
+            if (!is_file($up)) {
+                @unlink($path);
+                continue;
+            }
+
+            // Write byname file (byname_path must exist in lib.php already)
+            $by = byname_path($byDir, $file);
+            @file_put_contents($by, $code . "\n");
+
+            // Add to shared set (shared_index_add must exist; if not, we can inline it)
+            if (function_exists('shared_index_add')) {
+                shared_index_add($set, $file);
+            } else {
+                // minimal fallback: set as associative for fast lookup
+                $set[$file] = 1;
+            }
+        }
+    } catch (\Throwable $e) {
+        // ignore
+    }
+
+    return $set;
+}
+
+/* =========================
+   UPLOADS FINGERPRINT (DRIFT DETECTION ONLY)
+   - Baseline saved in cache/uploads_fingerprint.json
+   - Cheap signature computed on every GET (no sort, no big arrays)
+   - Strong hash computed only on explicit rebuild
+   ========================= */
+
+function mc_uploads_fingerprint_path(string $cacheDir): string {
+    return rtrim($cacheDir, '/\\') . '/uploads_fingerprint.json';
+}
+
+/**
+ * Compute CHEAP signature of uploads directory contents.
+ * One pass, no sort, low memory.
+ *
+ * Fields:
+ * - count, total_bytes, max_mtime
+ * - crc_xor: XOR aggregate of per-file CRC32
+ * - crc_sum: SUM aggregate of per-file CRC32 (mod 2^32)
+ */
+function mc_uploads_signature_compute(string $uploadDir): array {
+    if (!is_dir($uploadDir) || !is_readable($uploadDir)) return [];
+
+    $count = 0;
+    $total = 0;
+    $maxM  = 0;
+
+    // 32-bit aggregates (we store as unsigned-ish integers in JSON)
+    $crcXor = 0;
+    $crcSum = 0;
+
+    try {
+        $it = new DirectoryIterator($uploadDir);
+        foreach ($it as $fi) {
+            if ($fi->isDot()) continue;
+            if (!$fi->isFile()) continue;
+
+            $name = (string)$fi->getFilename();
+            if ($name === '' || (isset($name[0]) && $name[0] === '.')) continue;
+
+            $size  = (int)$fi->getSize();
+            $mtime = (int)$fi->getMTime();
+            if ($size < 0) $size = 0;
+            if ($mtime < 0) $mtime = 0;
+
+            $count++;
+            $total += $size;
+            if ($mtime > $maxM) $maxM = $mtime;
+
+            // Per-file signature string (small) -> CRC32
+            $s = $name . "\0" . $size . "\0" . $mtime;
+
+            // crc32() returns signed int sometimes; normalize to 0..2^32-1
+            $c = crc32($s);
+            if ($c < 0) $c = $c + 4294967296;
+
+            // XOR and SUM (mod 2^32)
+            $crcXor = $crcXor ^ $c;
+            $crcSum = ($crcSum + $c) % 4294967296;
+        }
+    } catch (\Throwable $e) {
+        return [];
+    }
+
+    // Normalize to ints (JSON)
+    $crcXor = (int)$crcXor;
+    $crcSum = (int)$crcSum;
+
+    return [
+        'v' => 2,
+        'generated_at' => gmdate('c'),
+        'count' => (int)$count,
+        'total_bytes' => (int)$total,
+        'max_mtime' => (int)$maxM,
+        'crc_xor' => $crcXor,
+        'crc_sum' => $crcSum,
+        // strong_sha256 optional (added by rebuild)
+    ];
+}
+
+/**
+ * Compute STRONG fingerprint of uploads directory contents.
+ * This is the expensive one: collects rows, sorts, sha256.
+ * Use ONLY during explicit rebuild.
+ *
+ * Returns 64-hex sha256 or '' on failure.
+ */
+function mc_uploads_strong_sha256_compute(string $uploadDir): string {
+    if (!is_dir($uploadDir) || !is_readable($uploadDir)) return '';
+
+    $rows = [];
+
+    try {
+        $it = new DirectoryIterator($uploadDir);
+        foreach ($it as $fi) {
+            if ($fi->isDot()) continue;
+            if (!$fi->isFile()) continue;
+
+            $name = (string)$fi->getFilename();
+            if ($name === '' || (isset($name[0]) && $name[0] === '.')) continue;
+
+            $size  = (int)$fi->getSize();
+            $mtime = (int)$fi->getMTime();
+            if ($size < 0) $size = 0;
+            if ($mtime < 0) $mtime = 0;
+
+            $rows[] = $name . "\0" . $size . "\0" . $mtime;
+        }
+    } catch (\Throwable $e) {
+        return '';
+    }
+
+    sort($rows, SORT_STRING);
+
+    $ctx = hash_init('sha256');
+    foreach ($rows as $r) {
+        hash_update($ctx, $r);
+        hash_update($ctx, "\n");
+    }
+    $sha = hash_final($ctx);
+
+    if (!is_string($sha) || !preg_match('~^[a-f0-9]{64}$~i', $sha)) return '';
+    return strtolower($sha);
+}
+
+/**
+ * Load baseline fingerprint.
+ * Accepts:
+ * - v1 old format (your previous) -> treated as "known but weak"; will not drift unless fields exist
+ * - v2 new format
+ */
+function mc_uploads_fingerprint_load(string $cacheDir): array {
+    $p = mc_uploads_fingerprint_path($cacheDir);
+    if (!is_file($p)) return [];
+
+    $raw = @file_get_contents($p);
+    if (!is_string($raw) || $raw === '') return [];
+
+    $j = json_decode($raw, true);
+    if (!is_array($j)) return [];
+
+    $v = (int)($j['v'] ?? 0);
+
+    if ($v === 2) {
+        // required cheap fields
+        if (!isset($j['count'], $j['total_bytes'], $j['max_mtime'], $j['crc_xor'], $j['crc_sum'])) return [];
+
+        return [
+            'v' => 2,
+            'generated_at' => (string)($j['generated_at'] ?? ''),
+            'count' => (int)$j['count'],
+            'total_bytes' => (int)$j['total_bytes'],
+            'max_mtime' => (int)$j['max_mtime'],
+            'crc_xor' => (int)$j['crc_xor'],
+            'crc_sum' => (int)$j['crc_sum'],
+            'strong_sha256' => (string)($j['strong_sha256'] ?? ''),
+        ];
+    }
+
+    // v1 legacy: keep compatibility if you already have old files lying around
+    if ($v === 1) {
+        $sha = (string)($j['sha256'] ?? '');
+        if (!preg_match('~^[a-f0-9]{64}$~i', $sha)) return [];
+        return [
+            'v' => 1,
+            'generated_at' => (string)($j['generated_at'] ?? ''),
+            'count' => (int)($j['count'] ?? 0),
+            'total_bytes' => (int)($j['total_bytes'] ?? 0),
+            'max_mtime' => (int)($j['max_mtime'] ?? 0),
+            'sha256' => strtolower($sha),
+        ];
+    }
+
+    return [];
+}
+
+function mc_uploads_fingerprint_save(string $cacheDir, array $payload): bool {
+    $p = mc_uploads_fingerprint_path($cacheDir);
+
+    // We only save v2 going forward
+    $v = (int)($payload['v'] ?? 0);
+    if ($v !== 2) return false;
+
+    $data = [
+        'v' => 2,
+        'generated_at' => (string)($payload['generated_at'] ?? gmdate('c')),
+        'count' => (int)($payload['count'] ?? 0),
+        'total_bytes' => (int)($payload['total_bytes'] ?? 0),
+        'max_mtime' => (int)($payload['max_mtime'] ?? 0),
+        'crc_xor' => (int)($payload['crc_xor'] ?? 0),
+        'crc_sum' => (int)($payload['crc_sum'] ?? 0),
+    ];
+
+    $strong = (string)($payload['strong_sha256'] ?? '');
+    if ($strong !== '' && preg_match('~^[a-f0-9]{64}$~i', $strong)) {
+        $data['strong_sha256'] = strtolower($strong);
+    }
+
+    return atomic_write_json($p, $data);
+}
+
+/**
+ * Drift detection against baseline fingerprint.
+ * - Baseline missing/invalid => known=false, drift=false (no warning)
+ * - Compute cheap signature every time (per your requirement).
+ * - Drift is decided by comparing cheap fields (v2) or sha256 (v1).
+ */
+function mc_uploads_drift_detect(string $cacheDir, string $uploadDir): array {
+    $base = mc_uploads_fingerprint_load($cacheDir);
+    if (!$base) {
+        return ['known' => false, 'drift' => false, 'baseline' => [], 'current' => []];
+    }
+
+    // Always compute current signature (no throttling)
+    $cur = mc_uploads_signature_compute($uploadDir);
+    if (!$cur) {
+        // If we can't compute, stay quiet.
+        return ['known' => true, 'drift' => false, 'baseline' => $base, 'current' => []];
+    }
+
+    $drift = false;
+
+    if ((int)($base['v'] ?? 0) === 2) {
+        // Compare cheap signature fields
+        $drift = (
+            (int)$base['count'] !== (int)$cur['count']
+            || (int)$base['total_bytes'] !== (int)$cur['total_bytes']
+            || (int)$base['max_mtime'] !== (int)$cur['max_mtime']
+            || (int)$base['crc_xor'] !== (int)$cur['crc_xor']
+            || (int)$base['crc_sum'] !== (int)$cur['crc_sum']
+        );
+    } else {
+        // v1 baseline: compare old sha256 to a strong hash only if you want; but per your new rule,
+        // we keep it cheap and simply don't assert drift based on v1 unless you rebuild once.
+        // Best: after first rebuild you will write v2 and be done.
+        $drift = false;
+    }
+
+    return ['known' => true, 'drift' => $drift, 'baseline' => $base, 'current' => $cur];
+}
+
+/* =========================
+   PAGED LIST QUERY
+   ========================= */
+
+function norm_q(string $s): string {
+    $s = trim($s);
+    $s = preg_replace('~\s+~', ' ', $s);
+    return (string)$s;
+}
+
+function parse_ymd(string $ymd, bool $endOfDay): ?int {
+    $ymd = trim($ymd);
+    if ($ymd === '') return null;
+    if (!preg_match('~^\d{4}-\d{2}-\d{2}$~', $ymd)) return null;
+
+    $ts = strtotime($ymd . ($endOfDay ? ' 23:59:59' : ' 00:00:00'));
+    if ($ts === false) return null;
+    return (int)$ts;
+}
+
+function query_files_paged(
+    array $fileIndex,
+    string $q,
+    ?int $fromTs,
+    ?int $toTs,
+    string $flags,
+    int $offset,
+    int $limit,
+    string $byDir,
+    ?array $sharedSetOrNull = null
+): array {
+    $q = norm_q($q);
+
+    $terms = [];
+    if ($q !== '') {
+        foreach (preg_split('~\s+~', $q) as $t) {
+            $t = trim((string)$t);
+            if ($t !== '') $terms[] = mb_strtolower($t, 'UTF-8');
+        }
+    }
+
+    $wantShared = ($flags === 'shared');
+
+    $page = [];
+    $matched = 0;
+
+    $needStart = max(0, $offset);
+    $needEnd = $needStart + max(1, $limit);
+
+    $hasTerms = !empty($terms);
+    $useSharedSet = is_array($sharedSetOrNull);
+
+    foreach ($fileIndex as $it) {
+        $name = (string)($it['name'] ?? '');
+        if ($name === '') continue;
+
+        $mtime = (int)($it['mtime'] ?? 0);
+        if ($fromTs !== null && $mtime < $fromTs) continue;
+        if ($toTs !== null && $mtime > $toTs) continue;
+
+        if ($hasTerms) {
+            $n = mb_strtolower($name, 'UTF-8');
+            $ok = true;
+            foreach ($terms as $t) {
+                if ($t === '') continue;
+                if (mb_strpos($n, $t, 0, 'UTF-8') === false) { $ok = false; break; }
+            }
+            if (!$ok) continue;
+        }
+
+        $isShared = false;
+
+        if ($wantShared) {
+            $isShared = $useSharedSet ? shared_index_has($sharedSetOrNull, $name) : is_shared_file($byDir, $name);
+            if (!$isShared) continue;
+        }
+
+        if ($matched >= $needStart && $matched < $needEnd) {
+            if (!$wantShared) {
+                $isShared = $useSharedSet ? shared_index_has($sharedSetOrNull, $name) : is_shared_file($byDir, $name);
+            }
+
+            $page[] = [
+                'name' => $name,
+                'size' => (int)($it['size'] ?? 0),
+                'mtime' => $mtime,
+                'shared' => $isShared,
+                'url' => '',
+            ];
+        }
+
+        $matched++;
+    }
+
+    return [$page, $matched];
+}
+
+/* =========================
+   LINK CLEANUP
+   ========================= */
+
+function delete_all_links(string $linkDir, string $byDir): array {
+    $txtDeleted = 0; $txtFailed = 0;
+    $jsonDeleted = 0; $jsonFailed = 0;
+
+    $dhb = @opendir($byDir);
+    if ($dhb) {
+        while (($f = readdir($dhb)) !== false) {
+            if ($f === '.' || $f === '..') continue;
+            if (!str_ends_with($f, '.txt')) continue;
+
+            $p = $byDir . '/' . $f;
+            if (!is_file($p)) continue;
+
+            if (@unlink($p)) $txtDeleted++;
+            else $txtFailed++;
+        }
+        closedir($dhb);
+    }
+
+    $dh = @opendir($linkDir);
+    if ($dh) {
+        while (($f = readdir($dh)) !== false) {
+            if ($f === '.' || $f === '..') continue;
+            if (!str_ends_with($f, '.json')) continue;
+
+            $p = $linkDir . '/' . $f;
+            if (!is_file($p)) continue;
+
+            if (@unlink($p)) $jsonDeleted++;
+            else $jsonFailed++;
+        }
+        closedir($dh);
+    }
+
+    return [$txtDeleted, $jsonDeleted, $txtFailed + $jsonFailed];
+}
+
+function delete_links_for_filename(string $linkDir, string $byDir, string $filename): array {
+    $deleted = 0;
+    $failed  = 0;
+
+    $by = byname_path($byDir, $filename);
+    $lockPath = $by . '.lock';
+
+    if (!is_dir($linkDir)) @mkdir($linkDir, 0755, true);
+    if (!is_dir($byDir))   @mkdir($byDir, 0755, true);
+
+    $fh = @fopen($lockPath, 'c+');
+    if ($fh) @flock($fh, LOCK_EX);
+
+    try {
+        $code = '';
+
+        if (is_file($by)) {
+            $raw = @file_get_contents($by);
+            if (is_string($raw) && $raw !== '') {
+                $code = trim(strtok($raw, "\r\n"));
+            }
+
+            if (@unlink($by)) $deleted++;
+            else {
+                if (is_file($by)) $failed++;
+            }
+        }
+
+        if ($code !== '' && preg_match('~^[A-Za-z0-9_-]{6,32}$~', $code)) {
+            $json = $linkDir . '/' . $code . '.json';
+            if (is_file($json)) {
+                if (@unlink($json)) $deleted++;
+                else {
+                    if (is_file($json)) $failed++;
+                }
+            }
+            return [$deleted, $failed];
+        }
+
+        $dh = @opendir($linkDir);
+        if (!$dh) return [$deleted, $failed];
+
+        $scanned  = 0;
+        $MAX_SCAN = 2000;
+
+        while (($f = readdir($dh)) !== false) {
+            if ($f === '.' || $f === '..') continue;
+            if (!str_ends_with($f, '.json')) continue;
+
+            $path = $linkDir . '/' . $f;
+            if (!is_file($path)) continue;
+
+            $raw = @file_get_contents($path);
+            if (!is_string($raw) || $raw === '') continue;
+
+            $j = json_decode($raw, true);
+            if (!is_array($j)) continue;
+
+            if (($j['f'] ?? null) === $filename) {
+                if (@unlink($path)) $deleted++;
+                else {
+                    if (is_file($path)) $failed++;
+                }
+            }
+
+            $scanned++;
+            if ($scanned >= $MAX_SCAN) {
+                $failed++;
+                break;
+            }
+        }
+        closedir($dh);
+
+        return [$deleted, $failed];
+
+    } finally {
+        if ($fh) {
+            @flock($fh, LOCK_UN);
+            @fclose($fh);
+        }
+        if (is_file($lockPath) && @filesize($lockPath) === 0) {
+            @unlink($lockPath);
+        }
+    }
+}
+
+/* =========================
    PHP LIMIT HELPERS (index.php)
    ========================= */
 
@@ -553,14 +1315,6 @@ function php_max_file_uploads(): int {
     $v = (string)ini_get('max_file_uploads');
     $n = (int)preg_replace('~[^0-9]~', '', $v);
     return ($n > 0) ? $n : 0;
-}
-
-function format_bytes(int $bytes): string {
-    $units = ['B','KB','MB','GB','TB'];
-    $i = 0;
-    $v = (float)$bytes;
-    while ($v >= 1024 && $i < count($units)-1) { $v /= 1024; $i++; }
-    return ($i === 0 ? (string)(int)$v : number_format($v, 2)) . ' ' . $units[$i];
 }
 
 /* =========================
