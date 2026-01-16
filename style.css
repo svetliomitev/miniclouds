@@ -426,34 +426,53 @@ mark{ padding: .05em .2em; border-radius: .25rem; }
 }
 
 /* =========================
-   BRAND (App name + PNG icon)
+   BRAND (robust alignment)
    ========================= */
 
-.mc-brand {
+.mc-app-name{
+  display: flex;
+  align-items: center;
+  line-height: 1;      /* prevent parent line box issues */
+  margin: 0;
+  min-width: 0;
+}
+
+.mc-brand{
   display: inline-flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: .5rem;
 }
 
-.mc-brand-img {
-  width: 1.7em;   /* proportionate to 1.25rem app name */
-  height: 1.7em;
+/* The key: icon gets its own centering rail */
+.mc-brand-icon{
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex: 0 0 auto;
-  display: block;
 }
 
-.mc-brand-text {
+.mc-brand-img{
+  display:block;
+  width: 28px;
+  height: 28px;
+}
+
+.mc-brand-text{
+  display: inline-flex;
+  align-items: center;
+  line-height: 1;
   font-weight: 600;
-  letter-spacing: 0.02em;
+  letter-spacing: .02em;
 }
 
-/* Slightly reduce on very small screens */
-@media (max-width: 360px) {
-  .mc-brand-img {
-    width: 1.5em;
-    height: 1.5em;
-  }
+/* Very small screens */
+@media (max-width: 360px){
+  .mc-brand-icon{ width: 24px; height: 24px; }
+  .mc-brand-img{ width: 24px; height: 24px; }
 }
+
 /* =========================
    PROGRESS BAR (Styles)
    ========================= */

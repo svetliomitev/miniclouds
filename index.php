@@ -557,19 +557,22 @@ $totalHuman = format_bytes((int)$totalBytes);
   <div class="container">
     <div class="mc-navbar-inner">
 
-      <div class="mc-app-name">
-        <span class="mc-brand" aria-label="<?= h($APP_NAME) ?>">
-          <img
-            src="miniclouds-icon.png"
-            class="mc-brand-img"
-            width="28"
-            height="28"
-            alt=""
-            decoding="async"
-          >
-          <span class="mc-brand-text"><?= h($APP_NAME) ?></span>
-        </span>
-      </div>
+<div class="mc-app-name">
+  <span class="mc-brand" aria-label="<?= h($APP_NAME) ?>">
+    <span class="mc-brand-icon" aria-hidden="true">
+      <img
+        src="miniclouds-icon.png"
+        class="mc-brand-img"
+        width="28"
+        height="28"
+        alt=""
+        decoding="async"
+      >
+    </span>
+    <span class="mc-brand-text"><?= h($APP_NAME) ?></span>
+  </span>
+</div>
+
 
       <button
         type="button"
