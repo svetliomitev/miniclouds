@@ -480,6 +480,15 @@ mark{ padding: .05em .2em; border-radius: .25rem; }
 /* CSP-safe progress widths (no inline style attributes) */
 .progress-bar{ width:0%; }
 
+/* Toast spinner */
+.mc-spin{
+  display: inline-block;
+  animation: mcspin 1s linear infinite;
+}
+@keyframes mcspin{
+  to { transform: rotate(360deg); }
+}
+
 /* 0..100% utility classes */
 .mc-w-0{width:0%}.mc-w-1{width:1%}.mc-w-2{width:2%}.mc-w-3{width:3%}.mc-w-4{width:4%}.mc-w-5{width:5%}.mc-w-6{width:6%}.mc-w-7{width:7%}.mc-w-8{width:8%}.mc-w-9{width:9%}.mc-w-10{width:10%}
 .mc-w-11{width:11%}.mc-w-12{width:12%}.mc-w-13{width:13%}.mc-w-14{width:14%}.mc-w-15{width:15%}.mc-w-16{width:16%}.mc-w-17{width:17%}.mc-w-18{width:18%}.mc-w-19{width:19%}.mc-w-20{width:20%}

@@ -4,6 +4,9 @@
 (function(){
   'use strict';
 
+  /* =========================
+     BOOT
+     ========================= */
   var BOOT = (function(){
     try {
       var el = document.getElementById('mc-boot');
@@ -16,10 +19,14 @@
       return {};
     }
   })();
+
   var PAGE_SIZE = Number(BOOT.pageSize || 20);
   var csrfToken = String(BOOT.csrf || '');
 
-  // CSP-safe: set progress width via CSS class (mc-w-0..mc-w-100), not inline style
+  /* =========================
+     CSP-SAFE PROGRESS WIDTH
+     ========================= */
+  // Sets progress width via CSS class mc-w-0..mc-w-100 (no inline style => CSP-safe)
   function setPctClass(el, pct){
     if (!el) return;
     pct = Math.max(0, Math.min(100, Math.round(Number(pct) || 0)));
@@ -38,7 +45,7 @@
   }
 
   /* =========================
-     LIFECYCLE MANAGER (single place for transient UI listeners)
+     LIFECYCLE (single place for listeners)
      ========================= */
   var L = (function(){
     var items = [];
@@ -50,7 +57,6 @@
       return handler;
     }
 
-    // per-feature scoped listeners (for transient UI like the search toast)
     function scope(){
       var local = [];
       function onLocal(target, type, handler, options){
@@ -100,6 +106,7 @@
       keyLast: null,
       scope: null
     },
+
     grid: document.getElementById('filesGrid'),
     empty: document.getElementById('filesEmpty'),
     filesSection: document.getElementById('filesSection') || document.getElementById('filesGrid'),
@@ -146,8 +153,7 @@
 
     indexChangedModal: document.getElementById('mcIndexChangedModal'),
     rebuildModal: document.getElementById('mcRebuildModal'),
-    rebuildStatusText: document.getElementById('mcRebuildStatusText'),
-    rebuildSteps: document.getElementById('mcRebuildSteps')
+    rebuildStatusText: document.getElementById('mcRebuildStatusText')
   };
 
   /* =========================
@@ -183,7 +189,7 @@
     return s.replace(/["\\#.;?&,+*~':"!^$[\]()=>|/@\s]/g, '\\$&');
   }
 
-  // IMPORTANT: keep a stable attribute representation for filenames (no HTML escaping mismatch)
+  // IMPORTANT: stable attribute representation for filenames
   function encName(name){
     try { return encodeURIComponent(String(name || '')); } catch (e) { return ''; }
   }
@@ -191,12 +197,9 @@
     try { return decodeURIComponent(String(s || '')); } catch (e) { return String(s || ''); }
   }
 
-  // Start a download without navigating (avoids aggressive page blanking).
-  // Uses a hidden iframe so cookies/session are included (same-origin).
   function startDownloadNoNav(url){
     url = String(url || '');
     if (!url) return;
-
     try {
       var iframe = document.getElementById('mcDownloadFrame');
       if (!iframe) {
@@ -208,7 +211,6 @@
       }
       iframe.src = url;
     } catch (e) {
-      // fallback: normal navigation
       window.location.href = url;
     }
   }
@@ -269,7 +271,6 @@
     var infoFiles = document.getElementById('mcInfoFilesCount');
     var infoSize  = document.getElementById('mcInfoTotalSize');
 
-    // source-of-truth from already-updated UI
     var filesNow = DOM.counts && DOM.counts.total1 ? DOM.counts.total1.textContent : '';
     var sizeNow  = DOM.footerTotal ? DOM.footerTotal.textContent : '';
 
@@ -278,97 +279,14 @@
   }
 
   /* =========================
-     INDEX CHANGED / REBUILD MODALS (blocking)
+     MODALS (centralized + safe cleanup)
      ========================= */
-  var __mcIndexChangedShown = false;
-  var __mcIndexChangedHard = false; // when true => UI stays disabled until rebuild
-
-  function showIndexChangedModal(){
-    if (__mcIndexChangedShown) return;
-    if (!DOM.indexChangedModal || !window.bootstrap) return;
-
-    __mcIndexChangedShown = true;
-    __mcIndexChangedHard = true;
-
-    // safety: remove orphan backdrops before showing
-    mcModalCleanup();
-
-    try {
-      var m = bootstrap.Modal.getOrCreateInstance(DOM.indexChangedModal, {
-        backdrop: 'static',
-        keyboard: false
-      });
-      m.show();
-    } catch (e) {}
-  }
-
-  function hideIndexChangedModal(){
-    // Try Bootstrap first
-    if (DOM.indexChangedModal && window.bootstrap) {
-      try {
-        var inst = bootstrap.Modal.getInstance(DOM.indexChangedModal) ||
-                  bootstrap.Modal.getOrCreateInstance(DOM.indexChangedModal);
-        inst.hide();
-      } catch (e) {}
-    }
-
-    // Fallback: hard-hide classes/state (in case bootstrap gets stuck)
-    if (DOM.indexChangedModal) {
-      DOM.indexChangedModal.classList.remove('show');
-      DOM.indexChangedModal.style.display = 'none';
-      DOM.indexChangedModal.setAttribute('aria-hidden', 'true');
-      DOM.indexChangedModal.removeAttribute('aria-modal');
-      DOM.indexChangedModal.removeAttribute('role');
-    }
-
-    mcModalCleanup();
-  }
-
-  function showRebuildModal(){
-    if (!DOM.rebuildModal || !window.bootstrap) return;
-    if (DOM.rebuildStatusText) DOM.rebuildStatusText.textContent = 'Rebuilding indexes…';
-
-    // safety: remove orphan backdrops before showing
-    mcModalCleanup();
-
-    try {
-      var m = bootstrap.Modal.getOrCreateInstance(DOM.rebuildModal, {
-        backdrop: 'static',
-        keyboard: false
-      });
-      m.show();
-    } catch (e) {}
-  }
-
-  function hideRebuildModal(){
-    // Try Bootstrap first
-    if (DOM.rebuildModal && window.bootstrap) {
-      try {
-        var inst = bootstrap.Modal.getInstance(DOM.rebuildModal) || bootstrap.Modal.getOrCreateInstance(DOM.rebuildModal);
-        inst.hide();
-      } catch (e) {}
-    }
-
-    // Fallback: hard-hide classes (in case bootstrap gets stuck)
-    if (DOM.rebuildModal) {
-      DOM.rebuildModal.classList.remove('show');
-      DOM.rebuildModal.style.display = 'none';
-      DOM.rebuildModal.setAttribute('aria-hidden', 'true');
-      DOM.rebuildModal.removeAttribute('aria-modal');
-      DOM.rebuildModal.removeAttribute('role');
-    }
-
-    mcModalCleanup();
-  }
-
   function mcModalCleanup(){
-    // Remove any orphaned modal backdrops that block UI
     var backs = document.querySelectorAll('.modal-backdrop');
     for (var i = 0; i < backs.length; i++){
       try { backs[i].parentNode.removeChild(backs[i]); } catch (e) {}
     }
 
-    // If no modal is actually shown, clear modal-open state
     var anyShown = document.querySelector('.modal.show');
     if (!anyShown) {
       document.body.classList.remove('modal-open');
@@ -377,239 +295,330 @@
     }
   }
 
+  function modalShow(el){
+    if (!el || !window.bootstrap) return;
+    mcModalCleanup();
+    try {
+      var m = bootstrap.Modal.getOrCreateInstance(el, { backdrop:'static', keyboard:false });
+      m.show();
+    } catch (e) {}
+  }
+
+  function modalHide(el){
+    if (el && window.bootstrap) {
+      try {
+        var inst = bootstrap.Modal.getInstance(el) || bootstrap.Modal.getOrCreateInstance(el);
+        inst.hide();
+      } catch (e) {}
+    }
+    if (el) {
+      el.classList.remove('show');
+      el.style.display = 'none';
+      el.setAttribute('aria-hidden', 'true');
+      el.removeAttribute('aria-modal');
+      el.removeAttribute('role');
+    }
+    mcModalCleanup();
+  }
+
   /* =========================
-     TOASTS (NO bootstrap.Toast JS; styling only)
+     HARD LOCK (index drift)
      ========================= */
-  var searchToastSuppressUntil = 0;
+  var HardLock = (function(){
+    var shown = false;
+    var hard = false;
 
-  function toastIconClassFor(kind){
-    switch (kind) {
-      case 'success': return 'bi bi-check-circle-fill';
-      case 'danger':  return 'bi bi-x-circle-fill';
-      case 'warning': return 'bi bi-exclamation-triangle-fill';
-      case 'info':    return 'bi bi-info-circle-fill';
-      default:        return 'bi bi-dot';
-    }
-  }
-
-  var __mcToastTimer = 0;
-  var __mcSearchToastTimer = 0;
-
-  function hideMainToast(){
-    var t = DOM.toast;
-    if (__mcToastTimer) { clearTimeout(__mcToastTimer); __mcToastTimer = 0; }
-    if (t && t.el) forceHide(t.el);
-  }
-
-  function canShowSearchToast(){
-    return !(searchToastSuppressUntil && Date.now() < searchToastSuppressUntil);
-  }
-
-  function hideSearchResultsToast(){
-    var st = DOM.searchToast;
-
-    if (__mcSearchToastTimer) { clearTimeout(__mcSearchToastTimer); __mcSearchToastTimer = 0; }
-
-    if (st.scope) {
-      try { st.scope.dispose(); } catch (e0) {}
-      st.scope = null;
-    }
-    st.keyLast = null;
-    if (st.el) forceHide(st.el);
-  }
-
-  function scrollToResultsAndHide(){
-    var target = DOM.filesSection;
-    if (target && target.scrollIntoView) {
-      target.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }
-    hideSearchResultsToast();
-  }
-
-  function showToast(kind, title, msg){
-    // when a “real” toast shows, the search toast must disappear
-    hideSearchResultsToast();
-    searchToastSuppressUntil = Date.now() + 2200;
-
-    var t = DOM.toast;
-    if (!t.el) return;
-
-    hideMainToast();
-
-    var cls = 'toast border-0 w-100 pretty';
-    if (kind === 'success') cls += ' text-bg-success';
-    else if (kind === 'danger') cls += ' text-bg-danger';
-    else if (kind === 'warning') cls += ' text-bg-warning';
-    else if (kind === 'info') cls += ' text-bg-info';
-    else cls += ' text-bg-secondary';
-
-    t.el.className = cls;
-    if (t.icon) t.icon.className = toastIconClassFor(kind);
-    if (t.title) t.title.textContent = title || 'Message';
-    if (t.body) t.body.textContent = msg || '';
-
-    forceShow(t.el);
-    t.el.classList.add('show');
-
-    __mcToastTimer = setTimeout(function(){
-      __mcToastTimer = 0;
-      hideMainToast();
-    }, 2000);
-  }
-
-  function classifyToast(okMsgs, errMsgs, opts){
-    okMsgs = Array.isArray(okMsgs) ? okMsgs : [];
-    errMsgs = Array.isArray(errMsgs) ? errMsgs : [];
-    opts = opts || {};
-
-    function isWarnText(s){
-      s = String(s || '');
-      return /could not be removed|some .* could not/i.test(s);
+    function show(){
+      if (shown) return;
+      if (!DOM.indexChangedModal) return;
+      shown = true;
+      hard = true;
+      modalShow(DOM.indexChangedModal);
     }
 
-    var hasOk = okMsgs.length > 0;
-    var hasErr = errMsgs.length > 0;
-    var allErrAreWarn = hasErr && errMsgs.every(isWarnText);
-    var okContainsWarn = okMsgs.some(isWarnText);
-
-    if (hasErr && (!hasOk || !allErrAreWarn)) {
-      return { kind:'danger', title: opts.errorTitle || 'Error', msg: errMsgs.join(' | ') };
-    }
-    if ((hasOk && hasErr && allErrAreWarn) || okContainsWarn) {
-      var warnParts = [];
-      if (hasOk) warnParts = warnParts.concat(okMsgs);
-      if (hasErr) warnParts = warnParts.concat(errMsgs);
-      return { kind:'warning', title: opts.warnTitle || 'Warning', msg: warnParts.join(' | ') };
-    }
-    if (hasOk) {
-      return { kind:'success', title: opts.successTitle || 'Success', msg: okMsgs.join(' | ') };
-    }
-    return { kind:'info', title: opts.infoTitle || 'Info', msg: opts.infoMsg || '' };
-  }
-
-  function showResultsToast(shownCount, totalCount, filterKey, opts){
-    var st = DOM.searchToast;
-    opts = opts || {};
-    if (!st.el) return;
-    if (!canShowSearchToast()) return;
-
-    var isAppend = !!opts.append;
-
-    // Dedupe only for non-append (append is user-driven feedback)
-    if (!isAppend && filterKey === st.keyLast) return;
-    st.keyLast = filterKey;
-
-    // clear any previous auto-hide
-    if (__mcSearchToastTimer) { clearTimeout(__mcSearchToastTimer); __mcSearchToastTimer = 0; }
-
-    // reset scoped listeners for this toast instance
-    if (st.scope) {
-      try { st.scope.dispose(); } catch (e0) {}
-      st.scope = null;
+    function clear(){
+      if (!hard && !shown) return;
+      hard = false;
+      shown = false;
+      modalHide(DOM.indexChangedModal);
     }
 
-    // Style + copy
-    if (isAppend) {
-      st.el.className = 'toast border-0 w-100 pretty text-bg-success';
-      if (st.icon) st.icon.className = 'bi bi-check-circle-fill';
-      if (st.title) st.title.textContent = 'Loaded results';
-      if (st.body) st.body.textContent =
-        'Showing ' + Number(shownCount || 0) + ' of ' + Number(totalCount || 0) + ' result(s).';
-    } else {
-      st.el.className = 'toast border-0 w-100 pretty text-bg-warning';
-      if (st.icon) st.icon.className = 'bi bi-funnel-fill';
-      if (st.title) st.title.textContent = 'Search Results';
-      if (st.body) st.body.textContent =
-        'Showing ' + Number(shownCount || 0) + ' of ' + Number(totalCount || 0) + ' result(s). Tap to view.';
+    function isHard(){ return !!hard; }
+
+    return { show: show, clear: clear, isHard: isHard };
+  })();
+
+  /* =========================
+     TOASTS (single owner)
+     ========================= */
+  var Toast = (function(){
+    var mainTimer = 0;
+    var searchTimer = 0;
+    var suppressSearchUntil = 0;
+
+    function toastIconClassFor(kind){
+      switch (kind) {
+        case 'success': return 'bi bi-check-circle-fill';
+        case 'danger':  return 'bi bi-x-circle-fill';
+        case 'warning': return 'bi bi-exclamation-triangle-fill';
+        case 'info':    return 'bi bi-info-circle-fill';
+        default:        return 'bi bi-dot';
+      }
     }
 
-    st.scope = L.scope();
+    function hideMain(){
+      if (mainTimer) { clearTimeout(mainTimer); mainTimer = 0; }
+      if (DOM.toast && DOM.toast.close) DOM.toast.close.disabled = false;
+      if (DOM.toast && DOM.toast.el) forceHide(DOM.toast.el);
+    }
 
-    // Click behavior:
-    // - initial search: click scrolls to results
-    // - append: click just closes (no scroll)
-    st.scope.on(st.el, 'click', function(){
-      if (isAppend) { hideSearchResultsToast(); return; }
-      scrollToResultsAndHide();
-    });
+    function hideSearch(){
+      if (searchTimer) { clearTimeout(searchTimer); searchTimer = 0; }
 
-    // Close button: ALWAYS just close (no scroll)
-    if (st.close) {
-      st.scope.on(st.close, 'click', function(ev){
-        ev.preventDefault();
-        ev.stopPropagation();
-        hideSearchResultsToast();
+      var st = DOM.searchToast;
+      if (st.scope) {
+        try { st.scope.dispose(); } catch (e0) {}
+        st.scope = null;
+      }
+      st.keyLast = null;
+      if (st.el) forceHide(st.el);
+    }
+
+    // “Last action wins”: any action toast kills search toast immediately.
+    function priorityAction(){
+      hideSearch();
+      suppressSearchUntil = Date.now() + 2200;
+    }
+
+    function canShowSearch(isAppend){
+      if (isAppend) return true; // append toast is user-driven; always allowed
+      return !(suppressSearchUntil && Date.now() < suppressSearchUntil);
+    }
+
+    function show(kind, title, msg, opts){
+      opts = opts || {};
+      priorityAction(); // action toast always wins
+
+      var t = DOM.toast;
+      if (!t || !t.el) return;
+
+      hideMain();
+
+      var cls = 'toast border-0 w-100 pretty';
+      if (kind === 'success') cls += ' text-bg-success';
+      else if (kind === 'danger') cls += ' text-bg-danger';
+      else if (kind === 'warning') cls += ' text-bg-warning';
+      else if (kind === 'info') cls += ' text-bg-info';
+      else cls += ' text-bg-secondary';
+
+      t.el.className = cls;
+      if (t.icon) t.icon.className = toastIconClassFor(kind);
+      if (t.title) t.title.textContent = title || 'Message';
+      if (t.body) t.body.textContent = msg || '';
+
+      if (t.close) t.close.disabled = !!opts.noClose;
+
+      forceShow(t.el);
+      t.el.classList.add('show');
+
+      if (!opts.sticky) {
+        mainTimer = setTimeout(function(){
+          mainTimer = 0;
+          hideMain();
+        }, Number(opts.ttl || 2000));
+      }
+    }
+
+    // Sticky “working” (Delete All)
+    function workingWarning(title, msg){
+      priorityAction();
+      show('warning', title || 'Working…', msg || '', { sticky:true, noClose:true });
+      // spinner icon
+      if (DOM.toast && DOM.toast.icon) DOM.toast.icon.className = 'bi bi-arrow-repeat mc-spin';
+    }
+
+    function showResults(shownCount, totalCount, filterKey, opts){
+      opts = opts || {};
+      var isAppend = !!opts.append;
+
+      var st = DOM.searchToast;
+      if (!st || !st.el) return;
+
+      // Append toast replaces main toast (explicit user action: Show more)
+      if (isAppend) hideMain();
+
+      if (!canShowSearch(isAppend)) return;
+
+      if (!isAppend && filterKey === st.keyLast) return;
+      st.keyLast = filterKey;
+
+      if (searchTimer) { clearTimeout(searchTimer); searchTimer = 0; }
+      if (st.scope) {
+        try { st.scope.dispose(); } catch (e0) {}
+        st.scope = null;
+      }
+
+      if (isAppend) {
+        st.el.className = 'toast border-0 w-100 pretty text-bg-success';
+        if (st.icon) st.icon.className = 'bi bi-check-circle-fill';
+        if (st.title) st.title.textContent = 'Loaded results';
+        if (st.body) st.body.textContent =
+          'Showing ' + Number(shownCount || 0) + ' of ' + Number(totalCount || 0) + ' result(s).';
+      } else {
+        st.el.className = 'toast border-0 w-100 pretty text-bg-warning';
+        if (st.icon) st.icon.className = 'bi bi-funnel-fill';
+        if (st.title) st.title.textContent = 'Search Results';
+        if (st.body) st.body.textContent =
+          'Showing ' + Number(shownCount || 0) + ' of ' + Number(totalCount || 0) + ' result(s). Tap to view.';
+      }
+
+      st.scope = L.scope();
+
+      function hide(){ hideSearch(); }
+
+      function scrollToResultsAndHide(){
+        var target = DOM.filesSection;
+        if (target && target.scrollIntoView) target.scrollIntoView({ behavior:'smooth', block:'start' });
+        hide();
+      }
+
+      st.scope.on(st.el, 'click', function(){
+        if (isAppend) hide();
+        else scrollToResultsAndHide();
       });
+
+      if (st.close) {
+        st.scope.on(st.close, 'click', function(ev){
+          ev.preventDefault();
+          ev.stopPropagation();
+          hide();
+        });
+      }
+
+      forceShow(st.el);
+      st.el.classList.add('show');
+
+      if (isAppend) {
+        searchTimer = setTimeout(function(){
+          searchTimer = 0;
+          hide();
+        }, Number(opts.ttl || 2000));
+      }
     }
 
-    forceShow(st.el);
-    st.el.classList.add('show');
-
-    // Append toast auto-dismiss (like success toasts)
-    if (isAppend) {
-      __mcSearchToastTimer = setTimeout(function(){
-        __mcSearchToastTimer = 0;
-        hideSearchResultsToast();
-      }, Number(opts.ttl || 2000));
+    function hideAll(){
+      hideSearch();
+      hideMain();
     }
-  }
 
-  function replaceSearchToastForAction(){
-    hideSearchResultsToast();
-  }
-
-  if (DOM.toast.close) {
-    L.on(DOM.toast.close, 'click', function(ev){
-      ev.preventDefault();
-      ev.stopPropagation();
-      hideMainToast();
-    });
-  }
+    return {
+      show: show,
+      workingWarning: workingWarning,
+      showResults: showResults,
+      hideAll: hideAll,
+      hideMain: hideMain,
+      hideSearch: hideSearch,
+      priorityAction: priorityAction
+    };
+  })();
 
   /* =========================
-     BUSY / ENABLE-DISABLE POLICY (single source of truth)
+     ROW BUSY (single owner)
      ========================= */
-  var UI = {
-    busy: false,
-    _deleteAllHasFiles: (Number(BOOT.totalFiles || 0) > 0),
+  var RowBusy = (function(){
+    var map = Object.create(null);
 
-    setBusy: function(isBusy){
-      UI.busy = !!isBusy;
+    function set(filename, busy){
+      filename = String(filename || '');
+      if (!filename) return;
 
-      var hard = !!__mcIndexChangedHard;
+      if (busy) map[filename] = 1;
+      else delete map[filename];
 
-      // Rebuild Index is allowed even when hard-locked (but still blocked by busy).
-      setEnabled(DOM.buttons.rebuildIndex, !UI.busy);
-
-      setEnabled(DOM.buttons.reinstall, (!UI.busy && !hard));
-      setEnabled(DOM.buttons.deleteAll, (!UI.busy && !hard && !!UI._deleteAllHasFiles));
-      setEnabled(DOM.buttons.showMore, (!UI.busy && !hard));
-      setEnabled(DOM.buttons.searchClear, (!UI.busy && !hard));
-      setEnabled(DOM.buttons.flagsDropdownBtn, (!UI.busy && !hard));
-      setEnabled(DOM.buttons.uploadBtn, (!UI.busy && !hard));
-      if (DOM.upload.input) DOM.upload.input.disabled = (UI.busy || hard);
-
-      // Search controls: DO NOT disable q (caret glitches)
-      if (DOM.search.q) DOM.search.q.disabled = false;
-      if (DOM.search.from) DOM.search.from.disabled = (UI.busy || hard);
-      if (DOM.search.to) DOM.search.to.disabled = (UI.busy || hard);
-
-      UI.applyBusyToGrid();
-    },
-
-    applyBusyToGrid: function(){
       if (!DOM.grid) return;
-      var nodes = DOM.grid.querySelectorAll('button, input, select, textarea');
-      var hard = !!__mcIndexChangedHard;
-      for (var i = 0; i < nodes.length; i++) nodes[i].disabled = (UI.busy || hard);
-    },
+      var key = encName(filename);
+      var wrapper = DOM.grid.querySelector('[data-file-card="' + cssEscape(key) + '"]');
+      if (!wrapper) return;
 
-    setDeleteAllHasFiles: function(hasFiles){
-      UI._deleteAllHasFiles = !!hasFiles;
-      // keep button policy consistent even if caller doesn't call setBusy again
-      setEnabled(DOM.buttons.deleteAll, (!UI.busy && !__mcIndexChangedHard && !!UI._deleteAllHasFiles));
+      var controls = wrapper.querySelectorAll('[data-share-btn],[data-download-btn],form.js-ajax button[type="submit"]');
+      for (var i = 0; i < controls.length; i++){
+        controls[i].disabled = !!busy;
+        controls[i].setAttribute('aria-disabled', busy ? 'true' : 'false');
+      }
     }
-  };
+
+    function isBusy(filename){
+      filename = String(filename || '');
+      return !!(map && map[filename]);
+    }
+
+    function reapplyAll(){
+      for (var k in map) {
+        if (Object.prototype.hasOwnProperty.call(map, k)) set(k, true);
+      }
+    }
+
+    return { set: set, isBusy: isBusy, reapplyAll: reapplyAll };
+  })();
+
+  /* =========================
+     UI POLICY (single source of truth)
+     ========================= */
+  var UI = (function(){
+    var busy = false;
+    var deleteAllHasFiles = (Number(BOOT.totalFiles || 0) > 0);
+
+    function applyButtons(){
+      var hard = HardLock.isHard();
+
+      // Rebuild is allowed even when hard-locked (but not when busy)
+      setEnabled(DOM.buttons.rebuildIndex, !busy);
+
+      setEnabled(DOM.buttons.reinstall, (!busy && !hard));
+      setEnabled(DOM.buttons.deleteAll, (!busy && !hard && !!deleteAllHasFiles));
+      setEnabled(DOM.buttons.showMore, (!busy && !hard));
+      setEnabled(DOM.buttons.searchClear, (!busy && !hard));
+      setEnabled(DOM.buttons.flagsDropdownBtn, (!busy && !hard));
+      setEnabled(DOM.buttons.uploadBtn, (!busy && !hard));
+
+      if (DOM.upload.input) DOM.upload.input.disabled = (busy || hard);
+
+      // Search controls: do NOT disable q (caret glitches)
+      if (DOM.search.q) DOM.search.q.disabled = false;
+      if (DOM.search.from) DOM.search.from.disabled = (busy || hard);
+      if (DOM.search.to) DOM.search.to.disabled = (busy || hard);
+    }
+
+    function applyGridPolicy(){
+      if (!DOM.grid) return;
+      var hard = HardLock.isHard();
+      var nodes = DOM.grid.querySelectorAll('button, input, select, textarea');
+      for (var i = 0; i < nodes.length; i++) nodes[i].disabled = (busy || hard);
+      // then re-apply row locks
+      RowBusy.reapplyAll();
+    }
+
+    function setBusy(v){
+      busy = !!v;
+      applyButtons();
+      applyGridPolicy();
+    }
+
+    function setDeleteAllHasFiles(v){
+      deleteAllHasFiles = !!v;
+      applyButtons();
+    }
+
+    function getBusy(){ return !!busy; }
+
+    return {
+      setBusy: setBusy,
+      getBusy: getBusy,
+      setDeleteAllHasFiles: setDeleteAllHasFiles,
+      applyButtons: applyButtons,
+      applyGridPolicy: applyGridPolicy
+    };
+  })();
 
   /* =========================
      STATE
@@ -619,26 +628,19 @@
   var bootFiles = Array.isArray(BOOT.filesPage) ? BOOT.filesPage : [];
 
   var pageState = {
-    offset: bootFiles.length,                  // next offset to request
-    limit: PAGE_SIZE,                          // ALWAYS PAGE_SIZE
-    desired: Math.max(PAGE_SIZE, bootFiles.length || 0), // how many items we want to keep visible after mutation refresh
+    offset: bootFiles.length,
     total: Number(BOOT.totalFiles || 0),
     files: bootFiles
   };
 
-  // URL fetch dedupe
   var __mcUrlInflight = Object.create(null);
-
-  // navigation guard: suppress "network error" toasts when we intentionally redirect (reinstall)
   var __mcNavigating = false;
 
-  // list request sequencing
   var __mcListReqSeq = 0;
   var __mcListAbortCtl = null;
-  var __mcListSilent = 0;      // when >0, fetchList won't render/toast
-  var __mcListNoAbort = 0;     // when >0, fetchList won't abort previous (used for buffered paging)
+  var __mcListSilent = 0;
+  var __mcListNoAbort = 0;
 
-  // stable URL base
   var __mcBaseHref = (function(){
     try { return new URL('index.php', window.location.href).toString(); } catch (e) { return 'index.php'; }
   })();
@@ -648,26 +650,31 @@
   }
 
   /* =========================
-     STATS (single updater)
+     STATS
      ========================= */
+  function updateCounts(shown, total){
+    shown = Number(shown || 0);
+    total = Number(total || 0);
+    if (DOM.counts.shown1) DOM.counts.shown1.textContent = String(shown);
+    if (DOM.counts.total1) DOM.counts.total1.textContent = String(total);
+    if (DOM.counts.shown2) DOM.counts.shown2.textContent = String(shown);
+    if (DOM.counts.total2) DOM.counts.total2.textContent = String(total);
+  }
+
   function applyStats(stats){
     if (!stats) return;
 
-    // Hard-lock ONLY when drift is known AND drift detected.
-    // Also IMPORTANT: if server says "no change", CLEAR any previous hard-lock.
     var changed = (Number(stats.index_changed || 0) === 1);
     var known   = (Number(stats.index_changed_known || 0) === 1);
 
     if (changed && known) {
-      showIndexChangedModal();
-      UI.setBusy(UI.busy);
+      HardLock.show();
+      UI.setBusy(UI.getBusy()); // re-apply policy
     } else {
-      // server is clean => unlock UI if it was previously hard-locked
-      if (__mcIndexChangedHard) {
-        __mcIndexChangedHard = false;
-        __mcIndexChangedShown = false;
-        hideIndexChangedModal();
-        UI.setBusy(UI.busy);
+      // server is clean => unlock if we were locked
+      if (HardLock.isHard()) {
+        HardLock.clear();
+        UI.setBusy(UI.getBusy());
       }
     }
 
@@ -676,7 +683,6 @@
     var totalAll = Number(stats.total_files || 0);
     UI.setDeleteAllHasFiles(totalAll > 0);
 
-    // keep totals consistent in the UI (shown stays as-is)
     var shownNow = (DOM.counts && DOM.counts.shown1) ? Number(DOM.counts.shown1.textContent || 0) : 0;
     updateCounts(shownNow, totalAll);
 
@@ -705,15 +711,6 @@
   /* =========================
      RENDER
      ========================= */
-  function updateCounts(shown, total){
-    shown = Number(shown || 0);
-    total = Number(total || 0);
-    if (DOM.counts.shown1) DOM.counts.shown1.textContent = String(shown);
-    if (DOM.counts.total1) DOM.counts.total1.textContent = String(total);
-    if (DOM.counts.shown2) DOM.counts.shown2.textContent = String(shown);
-    if (DOM.counts.total2) DOM.counts.total2.textContent = String(total);
-  }
-
   function renderFiles(arr, totalMatches, highlightTerms, hasMore){
     arr = Array.isArray(arr) ? arr : [];
     totalMatches = Number(totalMatches || 0);
@@ -751,7 +748,6 @@
       var pillClickable = (isShared ? ' is-clickable' : '');
       var shareLabel = isShared ? 'Unshare' : 'Share';
 
-      // IMPORTANT: data-file-card and data-f are URL-encoded filename keys.
       html.push(
         '<div class="col-12 col-md-6" data-file-card="' + escapeHtml(key) + '">' +
           '<div class="file-card ' + altClass + sharedClass + '"' +
@@ -781,15 +777,11 @@
             '<div class="file-actions">' +
               '<button class="btn btn-outline-secondary btn-sm" type="button"' +
                 ' data-f="' + escapeHtml(key) + '"' +
-                ' data-share-btn>' +
-                shareLabel +
-              '</button>' +
+                ' data-share-btn>' + shareLabel + '</button>' +
 
               '<button class="btn btn-outline-primary btn-sm" type="button"' +
                 ' data-f="' + escapeHtml(key) + '"' +
-                ' data-download-btn>' +
-                'Download' +
-              '</button>' +
+                ' data-download-btn>Download</button>' +
 
               '<form method="post" class="js-ajax" data-confirm="Delete this file?">' +
                 '<input type="hidden" name="csrf" value="' + escapeHtml(csrfToken) + '">' +
@@ -803,20 +795,23 @@
         '</div>'
       );
     }
+
     DOM.grid.innerHTML = html.join('');
 
-    UI.applyBusyToGrid();
+    // re-apply policies after render (single owner)
+    UI.applyGridPolicy();
+
     ensureVisibleSharedUrls();
 
     if (DOM.showMoreWrap && DOM.buttons.showMore && DOM.showMoreHint) {
       if (hasMore) {
         DOM.showMoreWrap.classList.remove('d-none');
-        DOM.buttons.showMore.disabled = false;
         DOM.showMoreHint.textContent = 'Showing ' + arr.length + ' of ' + totalMatches + ' match(es).';
       } else {
         DOM.showMoreWrap.classList.add('d-none');
         DOM.showMoreHint.textContent = '';
       }
+      UI.applyButtons();
     }
   }
 
@@ -829,16 +824,13 @@
 
     var prev = String(DOM.search.flagsBtn.getAttribute('data-value') || 'all');
 
-    // Always ensure label is correct, but do NOT re-run query if no change.
     DOM.search.flagsBtn.setAttribute('data-value', value);
     DOM.search.flagsLabel.textContent = (value === 'shared') ? 'Shared only' : 'All files';
 
     if (silent) return;
-
-    // No-op: same filter selected again => do nothing (no fetch, no toast).
     if (prev === value) return;
 
-    if (UI.busy || __mcIndexChangedHard) return;
+    if (HardLock.isHard()) return;
     readInputsIntoQuery();
     runQuery(true);
   }
@@ -859,17 +851,52 @@
   }
 
   /* =========================
-     LIST FETCH
+     LIST FETCH (centralized)
      ========================= */
-
   function getVisibleCountNow(){
-    // Prefer rendered cards count (source of truth for the UI)
     if (DOM.grid) {
       var cards = DOM.grid.querySelectorAll('[data-file-card]');
       if (cards && cards.length) return cards.length;
     }
-    // fallback to state
     return (pageState && Array.isArray(pageState.files)) ? pageState.files.length : PAGE_SIZE;
+  }
+
+  function indexExistingUrlsByName(){
+    var map = Object.create(null);
+    for (var i = 0; i < pageState.files.length; i++) {
+      var it = pageState.files[i];
+      if (!it) continue;
+      var n = String(it.name || '');
+      if (!n) continue;
+      if (it.shared && it.url) map[n] = String(it.url);
+    }
+    return map;
+  }
+
+  function indexVisibleUrlsFromDom(){
+    var map = Object.create(null);
+    if (!DOM.grid) return map;
+
+    var cards = DOM.grid.querySelectorAll('.file-card[data-shared="1"]');
+    for (var i = 0; i < cards.length; i++) {
+      var card = cards[i];
+      var wrapper = card.closest('[data-file-card]');
+      if (!wrapper) continue;
+
+      var key = String(wrapper.getAttribute('data-file-card') || '');
+      var fn = decName(key);
+      if (!fn) continue;
+
+      var u = String(card.getAttribute('data-url') || '').trim();
+      if (!u) {
+        var span = wrapper.querySelector('[data-link-text]');
+        if (span) u = String(span.textContent || '').trim();
+        if (u === 'loading…') u = '';
+      }
+
+      if (u) map[fn] = u;
+    }
+    return map;
   }
 
   function fetchList(offset, append){
@@ -878,11 +905,10 @@
 
     var reqOffset = offset;
     var reqAppend = append;
-
     var reqId = ++__mcListReqSeq;
 
     if (!__mcListNoAbort) {
-    if (__mcListAbortCtl) { try { __mcListAbortCtl.abort(); } catch (e0) {} }
+      if (__mcListAbortCtl) { try { __mcListAbortCtl.abort(); } catch (e0) {} }
     }
     __mcListAbortCtl = (window.AbortController ? new AbortController() : null);
 
@@ -892,7 +918,7 @@
 
     url.searchParams.set('ajax', 'list');
     url.searchParams.set('offset', String(offset));
-    url.searchParams.set('limit', String(PAGE_SIZE)); // ALWAYS installer page size
+    url.searchParams.set('limit', String(PAGE_SIZE));
     if (query.q) url.searchParams.set('q', query.q);
     if (query.from) url.searchParams.set('from', query.from);
     if (query.to) url.searchParams.set('to', query.to);
@@ -923,56 +949,55 @@
 
       pageState.total = Number(r.data.total || 0);
 
-      // Preserve shared URLs across refresh: prefer DOM snapshot, then state snapshot
       var oldUrlMap = indexExistingUrlsByName();
       var domUrlMap = indexVisibleUrlsFromDom();
       for (var k0 in domUrlMap) {
         if (Object.prototype.hasOwnProperty.call(domUrlMap, k0)) oldUrlMap[k0] = domUrlMap[k0];
       }
 
-      if (reqAppend) {
-        // Append exactly what the server returned for THIS page
-        pageState.files = pageState.files.concat(r.data.files);
-      } else {
-        // Replace list (reset search / clear / filter change / mutation-refresh page 1)
-        pageState.files = r.data.files;
-      }
+      if (reqAppend) pageState.files = pageState.files.concat(r.data.files);
+      else pageState.files = r.data.files;
 
-      // Next offset is deterministic: reqOffset + returnedCount (even if fewer than PAGE_SIZE)
       var returned = r.data.files.length;
       pageState.offset = reqOffset + returned;
 
-      // Re-apply known URLs so pills don't "reload" after any list refresh
       for (var k = 0; k < pageState.files.length; k++) {
         var row = pageState.files[k];
         if (!row) continue;
-
         var nm = String(row.name || '');
         if (!nm) continue;
-
-        if (row.shared && (!row.url || String(row.url) === '') && oldUrlMap[nm]) {
-          row.url = oldUrlMap[nm];
-        }
+        if (row.shared && (!row.url || String(row.url) === '') && oldUrlMap[nm]) row.url = oldUrlMap[nm];
       }
 
       if (!__mcListSilent) {
         var terms = splitTerms(query.q || '');
         updateCounts(pageState.files.length, pageState.total);
 
-        var hasFilter = ((query.q && query.q.trim()) || query.from || query.to || (query.flags && query.flags !== 'all'));
-        if (hasFilter) {
-          if (pageState.total > 0) {
-            showResultsToast(
-              pageState.files.length,
-              pageState.total,
-              queryKey() + '|n=' + pageState.total + '|shown=' + pageState.files.length,
-              { append: append, ttl: 2000 }
-            );
-          } else {
-            hideSearchResultsToast();
-          }
+        var returnedNow = (r.data && Array.isArray(r.data.files)) ? r.data.files.length : 0;
+
+        if (reqAppend && returnedNow > 0 && pageState.total > 0) {
+          Toast.showResults(
+            pageState.files.length,
+            pageState.total,
+            queryKey() + '|append|shown=' + pageState.files.length + '|total=' + pageState.total,
+            { append:true, ttl:2000 }
+          );
         } else {
-          hideSearchResultsToast();
+          var hasFilter = ((query.q && query.q.trim()) || query.from || query.to || (query.flags && query.flags !== 'all'));
+          if (hasFilter) {
+            if (pageState.total > 0) {
+              Toast.showResults(
+                pageState.files.length,
+                pageState.total,
+                queryKey() + '|n=' + pageState.total + '|shown=' + pageState.files.length,
+                { append:false, ttl:2000 }
+              );
+            } else {
+              Toast.hideSearch();
+            }
+          } else {
+            Toast.hideSearch();
+          }
         }
 
         var hm = r.data.has_more;
@@ -983,14 +1008,12 @@
       return r.data;
     })
     .catch(function(e){
-      // keep abort as "ignored" so upstream can stay quiet if desired
-      if (e && (e.name === 'AbortError' || e.code === 20)) return { ignored: true };
+      if (e && (e.name === 'AbortError' || e.code === 20)) return { ignored:true };
       if (e && typeof e === 'object' && e.reqId == null) e.reqId = reqId;
       throw e;
     });
   }
 
-  // Uniform “safe” wrapper: resolves to null on any failure; no unhandled rejections.
   function fetchListSafe(offset, append, toastTitle, toastMsg){
     return fetchList(offset, append)
       .then(function(data){
@@ -1002,46 +1025,21 @@
 
         var rid = (e && e.reqId != null) ? Number(e.reqId) : -1;
         if (rid === __mcListReqSeq && !__mcNavigating) {
-          showToast('warning', toastTitle || 'Index', toastMsg || 'Could not load list (network/server error).');
+          Toast.show('warning', toastTitle || 'Index', toastMsg || 'Could not load list (network/server error).');
         }
         return null;
       });
   }
 
-  // Mutation-friendly refresh:
-  // keep current visible count (orientation), but always page in PAGE_SIZE chunks.
   function refreshToDesiredCount(toastTitle, toastMsg){
     var desired = Math.max(PAGE_SIZE, Number(getVisibleCountNow() || 0));
-    pageState.desired = desired;
 
-    // buffered paging: do NOT render/toast until finished
     __mcListSilent++;
     __mcListNoAbort++;
 
-    // local accumulator
-    var all = [];
-    var total = 0;
     var next = 0;
     var lastHasMore = false;
 
-    function onePage(off){
-      return fetchListSafe(off, off > 0, toastTitle || 'Index', toastMsg || 'Could not refresh list (network/server error).')
-        .then(function(data){
-          if (!data || !data.files) {
-            // If fetchListSafe returns null, stop
-            return false;
-          }
-          // data.files exists only in the raw server JSON, but our fetchListSafe returns r.data
-          // which includes .files in your backend response.
-          return true;
-        });
-    }
-
-    // We can’t rely on fetchListSafe returning parsed files from fetchList (it returns r.data),
-    // so we will read from pageState after each call (fetchList already merged into pageState.files).
-    // To buffer correctly, we re-run fetch but keep silent, then render once at the end.
-
-    // Reset state for a fresh rebuild in memory
     pageState.files = [];
     pageState.offset = 0;
 
@@ -1050,17 +1048,13 @@
         .then(function(resp){
           if (!resp) return null;
 
-          // After fetchListSafe, pageState.files contains merged list so far,
-          // pageState.total is set, pageState.offset advanced.
-          total = Number(pageState.total || 0);
           next = Number(pageState.offset || 0);
 
-          // Determine hasMore from resp.has_more (server field)
           var hm = resp.has_more;
           lastHasMore = (hm === true) || (hm === 1) || (hm === '1');
 
           if (pageState.files.length >= desired) return null;
-          if (pageState.files.length >= total) return null;
+          if (pageState.files.length >= Number(pageState.total || 0)) return null;
           if (!lastHasMore) return null;
 
           return loop();
@@ -1073,58 +1067,98 @@
         __mcListNoAbort = Math.max(0, __mcListNoAbort - 1);
       })
       .then(function(){
-        // render once (no flicker)
         var terms = splitTerms(query.q || '');
         updateCounts(pageState.files.length, pageState.total);
 
         var hasFilter = ((query.q && query.q.trim()) || query.from || query.to || (query.flags && query.flags !== 'all'));
         if (hasFilter) {
           if (pageState.total > 0) {
-            showResultsToast(
+            Toast.showResults(
               pageState.files.length,
               pageState.total,
               queryKey() + '|n=' + pageState.total + '|shown=' + pageState.files.length,
-              { append: false, ttl: 2000 }
+              { append:false, ttl:2000 }
             );
           } else {
-            hideSearchResultsToast();
+            Toast.hideSearch();
           }
         } else {
-          hideSearchResultsToast();
+          Toast.hideSearch();
         }
 
-        // Use last known hasMore (best effort)
         renderFiles(pageState.files, pageState.total, terms, !!lastHasMore);
         return null;
       });
   }
 
-  function runQuery(reset, opts){
+  function runQuery(reset){
     reset = !!reset;
-    opts = opts || {};
-    var manageBusy = (opts.manageBusy !== false);
-
-    if (__mcIndexChangedHard) return Promise.resolve(null);
+    if (HardLock.isHard()) return Promise.resolve(null);
 
     if (reset) {
       if (DOM.showMoreWrap) DOM.showMoreWrap.classList.add('d-none');
       if (DOM.showMoreHint) DOM.showMoreHint.textContent = '';
       pageState.offset = 0;
       pageState.files = [];
-      pageState.limit = PAGE_SIZE; // keep state consistent
-      pageState.desired = PAGE_SIZE;
     }
 
-    if (manageBusy) UI.setBusy(true);
-
-    return fetchListSafe(pageState.offset, !reset, 'Index', 'Could not load list (network/server error).')
-      .finally(function(){
-        if (manageBusy) UI.setBusy(false);
-      });
+    return fetchListSafe(pageState.offset, !reset, 'Index', 'Could not load list (network/server error).');
   }
 
   /* =========================
-     AJAX FORMS (.js-ajax)
+     ACTIONS (server calls)
+     ========================= */
+  function classifyToast(okMsgs, errMsgs, opts){
+    okMsgs = Array.isArray(okMsgs) ? okMsgs : [];
+    errMsgs = Array.isArray(errMsgs) ? errMsgs : [];
+    opts = opts || {};
+
+    function isWarnText(s){
+      s = String(s || '');
+      return /could not be removed|some .* could not/i.test(s);
+    }
+
+    var hasOk = okMsgs.length > 0;
+    var hasErr = errMsgs.length > 0;
+    var allErrAreWarn = hasErr && errMsgs.every(isWarnText);
+    var okContainsWarn = okMsgs.some(isWarnText);
+
+    if (hasErr && (!hasOk || !allErrAreWarn)) {
+      return { kind:'danger', title: opts.errorTitle || 'Error', msg: errMsgs.join(' | ') };
+    }
+    if ((hasOk && hasErr && allErrAreWarn) || okContainsWarn) {
+      var warnParts = [];
+      if (hasOk) warnParts = warnParts.concat(okMsgs);
+      if (hasErr) warnParts = warnParts.concat(errMsgs);
+      return { kind:'warning', title: opts.warnTitle || 'Warning', msg: warnParts.join(' | ') };
+    }
+    if (hasOk) {
+      return { kind:'success', title: opts.successTitle || 'Success', msg: okMsgs.join(' | ') };
+    }
+    return { kind:'info', title: opts.infoTitle || 'Info', msg: opts.infoMsg || '' };
+  }
+
+  function postJson(url, fd){
+    return fetch(url, {
+      method: 'POST',
+      body: fd,
+      credentials: 'same-origin',
+      headers: {
+        'X-Requested-With': 'XMLHttpRequest',
+        'Accept': 'application/json'
+      }
+    })
+    .then(function(res){
+      return res.text().then(function(txt){
+        var data = null;
+        try { data = JSON.parse(txt || ''); } catch (e0) {}
+        return { ok: res.ok, status: res.status, redirected: !!res.redirected, url: res.url, txt: txt, data: data };
+      });
+    });
+  }
+
+  /* =========================
+     AJAX FORMS (.js-ajax)  (centralized flow)
      ========================= */
   function wireAjaxForms(){
     function onSubmit(ev){
@@ -1132,10 +1166,22 @@
       if (!(form instanceof HTMLFormElement)) return;
       if (!form.classList.contains('js-ajax')) return;
 
+      // IMPORTANT: never intercept uploadForm here (upload uses its own XHR+progress)
+      if (DOM.upload.form && form === DOM.upload.form) return;
+
       ev.preventDefault();
 
-      if (UI.busy) {
-        showToast('info', 'Busy', 'Another operation is in progress. Please wait.');
+      var fdPeek = new FormData(form);
+      var actionName = String(fdPeek.get('action') || '');
+      var fileName = String(fdPeek.get('name') || '');
+
+      if (HardLock.isHard() && actionName !== 'rebuild_index') {
+        HardLock.show();
+        return;
+      }
+
+      if (actionName === 'delete_one' && fileName && RowBusy.isBusy(fileName)) {
+        Toast.show('info', 'Busy', 'This file is already being processed.');
         return;
       }
 
@@ -1144,111 +1190,101 @@
         if (!window.confirm(String(msg))) return;
       }
 
-      replaceSearchToastForAction();
+      // last-action priority
+      Toast.priorityAction();
 
-      var fd = new FormData(form);
-      var actionName = String(fd.get('action') || '');
       var isRebuild = (actionName === 'rebuild_index');
 
+      // pre-action UI effects
       if (isRebuild) {
-        showRebuildModal();
-      } else if (__mcIndexChangedHard) {
-        // hard lock: only rebuild allowed
-        showIndexChangedModal();
-        return;
+        if (DOM.rebuildStatusText) DOM.rebuildStatusText.textContent = 'Rebuilding indexes…';
+        modalShow(DOM.rebuildModal);
+        UI.setBusy(true);
+      } else if (actionName === 'delete_all') {
+        // disable ONLY Delete All and show warning working toast
+        setEnabled(DOM.buttons.deleteAll, false);
+        Toast.workingWarning('Deleting all', 'Deleting all files...');
+      } else if (actionName === 'delete_one' && fileName) {
+        RowBusy.set(fileName, true);
       }
 
-      UI.setBusy(true);
-
-      fetch(form.getAttribute('action') || 'index.php', {
-        method: 'POST',
-        body: fd,
-        credentials: 'same-origin',
-        headers: {
-          'X-Requested-With': 'XMLHttpRequest',
-          'Accept': 'application/json'
-        }
-      })
-      .then(function(res){
-        return res.text().then(function(txt){
-          var data = null;
-          try { data = JSON.parse(txt || ''); } catch (e0) {}
-          return { ok: res.ok, status: res.status, redirected: !!res.redirected, url: res.url, txt: txt, data: data };
-        });
-      })
-      .then(function(r){
-        if (!r.data) {
-          var preview = String(r.txt || '').trim();
-          if (preview.length > 220) preview = preview.slice(0, 220) + '…';
-          if (r.redirected) showToast('danger', 'Error', 'Server redirected instead of returning JSON (AJAX not detected).');
-          else showToast('danger', 'Error', 'Non-JSON response (' + r.status + '): ' + (preview || 'empty'));
-          return null;
-        }
-
-        var okMsgs = Array.isArray(r.data.ok) ? r.data.ok : [];
-        var errMsgs = Array.isArray(r.data.err) ? r.data.err : [];
-
-        var t = classifyToast(okMsgs, errMsgs, {
-          successTitle: 'Success',
-          warnTitle: 'Warning',
-          errorTitle: 'Error',
-          infoTitle: 'Info'
-        });
-        if (t && t.msg) showToast(t.kind, t.title, t.msg);
-
-        // If server instructs redirect (reinstall), treat as intentional navigation.
-        if (r.data && r.data.redirect) {
-          var to = String(r.data.redirect || '').trim();
-          if (to) {
-            __mcNavigating = true;
-
-            // brief toast that will disappear on navigation
-            showToast('warning', 'Reinstall', 'Redirecting to installer...');
-
-            // navigate soon; do NOT refresh list/stats (would trigger false network errors)
-            setTimeout(function(){ window.location.href = to; }, 250);
+      postJson(form.getAttribute('action') || 'index.php', fdPeek)
+        .then(function(r){
+          if (!r.data) {
+            var preview = String(r.txt || '').trim();
+            if (preview.length > 220) preview = preview.slice(0, 220) + '…';
+            if (r.redirected) Toast.show('danger', 'Error', 'Server redirected instead of returning JSON (AJAX not detected).');
+            else Toast.show('danger', 'Error', 'Non-JSON response (' + r.status + '): ' + (preview || 'empty'));
             return null;
           }
-        }
 
-        if (r.data && r.data.stats) applyStats(r.data.stats);
-        else refreshStats();
+          var okMsgs = Array.isArray(r.data.ok) ? r.data.ok : [];
+          var errMsgs = Array.isArray(r.data.err) ? r.data.err : [];
 
-        var isClearAction = (actionName === 'delete_all');
+          var t = classifyToast(okMsgs, errMsgs, {
+            successTitle: 'Success',
+            warnTitle: 'Warning',
+            errorTitle: 'Error',
+            infoTitle: 'Info'
+          });
 
-        // delete_all intentionally resets the UI
-        if (isClearAction) {
-          clearInputs();
+          if (t && t.msg) Toast.show(t.kind, t.title, t.msg);
+          else Toast.hideMain();
+
+          // STRICT: close rebuild modal early when JSON arrived
+          if (isRebuild) {
+            try { modalHide(DOM.rebuildModal); } catch (e0) {}
+            try { mcModalCleanup(); } catch (e1) {}
+            UI.setBusy(false);
+          }
+
+          if (r.data && r.data.redirect) {
+            var to = String(r.data.redirect || '').trim();
+            if (to) {
+              __mcNavigating = true;
+              Toast.show('warning', 'Reinstall', 'Redirecting to installer...');
+              setTimeout(function(){ window.location.href = to; }, 250);
+              return null;
+            }
+          }
+
+          if (r.data && r.data.stats) applyStats(r.data.stats);
+          else refreshStats();
+
+          // delete_all is a reset
+          if (actionName === 'delete_all') {
+            clearInputs();
+            readInputsIntoQuery();
+            return runQuery(true);
+          }
+
           readInputsIntoQuery();
-          return runQuery(true, { manageBusy:false });
-        }
+          return refreshToDesiredCount('Index', 'Could not refresh list (network/server error).');
+        })
+        .catch(function(){
+          if (!__mcNavigating) Toast.show('danger', 'Error', 'Request failed (network error).');
+          return null;
+        })
+        .finally(function(){
+          if (__mcNavigating) return;
 
-        // For all other mutations (delete_one etc.), keep visible count but page by PAGE_SIZE
-        readInputsIntoQuery();
-        return refreshToDesiredCount('Index', 'Could not refresh list (network/server error).');
-      })
-      .catch(function(){
-        if (!__mcNavigating) {
-          showToast('danger', 'Error', 'Request failed (network error).');
-        }
-        return null;
-      })
-      .finally(function(){
-        if (__mcNavigating) return;
+          if (isRebuild) {
+            try { UI.setBusy(false); } catch (e0) {}
+            try { modalHide(DOM.rebuildModal); } catch (e1) {}
+            try { mcModalCleanup(); } catch (e2) {}
+          }
 
-        // Always end busy for ALL ajax form actions
-        UI.setBusy(false);
+          if (actionName === 'delete_all') {
+            UI.applyButtons();
+          }
 
-        // Always hide rebuild modal if it was shown (even if request failed)
-        if (isRebuild) hideRebuildModal();
+          if (actionName === 'delete_one' && fileName) {
+            RowBusy.set(fileName, false);
+          }
 
-        // Always cleanup any orphaned backdrops / modal-open state
-        mcModalCleanup();
-
-        // After unlocking UI, do best-effort stats refresh.
-        // (Do NOT gate unlocking on this; it can fail and should not block UI.)
-        refreshStats();
-      });
+          mcModalCleanup();
+          refreshStats();
+        });
     }
 
     L.on(document, 'submit', onSubmit, true);
@@ -1257,6 +1293,10 @@
   /* =========================
      UPLOAD WITH PROGRESS
      ========================= */
+  function setPctClassUpload(el, pct){
+    setPctClass(el, pct);
+  }
+
   function summarizeUploadOk(okMsgs){
     okMsgs = Array.isArray(okMsgs) ? okMsgs : [];
     var uploaded = [];
@@ -1287,7 +1327,6 @@
     var btn = DOM.buttons.uploadBtn;
     var wrap = DOM.upload.wrap;
     var bar = DOM.upload.bar;
-
     if (!form || !input || !btn || !wrap || !bar) return;
 
     var maxTotal = Number(BOOT.maxPostBytes || 0);
@@ -1297,36 +1336,35 @@
     function setProgress(pct){
       pct = Math.max(0, Math.min(100, pct));
       wrap.classList.remove('d-none');
-      setPctClass(bar, pct);          // <-- CSP-safe (no inline style)
+      setPctClassUpload(bar, pct);
       bar.textContent = pct + '%';
     }
     function resetProgress(){
-      setPctClass(bar, 0);            // <-- CSP-safe (no inline style)
+      setPctClassUpload(bar, 0);
       bar.textContent = '0%';
       wrap.classList.add('d-none');
     }
 
     L.on(form, 'submit', function(ev){
       if (!window.XMLHttpRequest || !window.FormData) return;
-
       ev.preventDefault();
 
-      if (UI.busy) {
-        showToast('info', 'Busy', 'Another operation is in progress. Please wait.');
+      if (UI.getBusy()) {
+        Toast.show('info', 'Busy', 'Another operation is in progress. Please wait.');
         return;
       }
-      if (__mcIndexChangedHard) {
-        showIndexChangedModal();
+      if (HardLock.isHard()) {
+        HardLock.show();
         return;
       }
 
       if (!input.files || input.files.length === 0) {
-        showToast('warning', 'Upload', 'No files selected.');
+        Toast.show('warning', 'Upload', 'No files selected.');
         return;
       }
 
       if (maxFiles > 0 && input.files.length > maxFiles) {
-        showToast('warning', 'Upload', 'Too many files selected (' + input.files.length + '). Max allowed is ' + maxFiles + '.');
+        Toast.show('warning', 'Upload', 'Too many files selected (' + input.files.length + '). Max allowed is ' + maxFiles + '.');
         return;
       }
 
@@ -1335,15 +1373,17 @@
         var sz = Number(input.files[i].size || 0);
         total += sz;
         if (maxPerFile > 0 && sz > maxPerFile) {
-          showToast('warning', 'Upload', 'A file is larger than the per-file limit (' + formatBytes(maxPerFile) + ').');
+          Toast.show('warning', 'Upload', 'A file is larger than the per-file limit (' + formatBytes(maxPerFile) + ').');
           return;
         }
       }
 
       if (maxTotal > 0 && total > maxTotal) {
-        showToast('warning', 'Upload', 'Selected files total (' + formatBytes(total) + ') exceeds the server limit (' + formatBytes(maxTotal) + ').');
+        Toast.show('warning', 'Upload', 'Selected files total (' + formatBytes(total) + ') exceeds the server limit (' + formatBytes(maxTotal) + ').');
         return;
       }
+
+      Toast.priorityAction();
 
       var fd = new FormData(form);
 
@@ -1370,7 +1410,6 @@
         if (xhr.status === 200 && data) {
           var ok = Array.isArray(data.ok) ? data.ok : [];
           var err = Array.isArray(data.err) ? data.err : [];
-
           ok = summarizeUploadOk(ok);
 
           var t = classifyToast(ok, err, {
@@ -1379,7 +1418,7 @@
             errorTitle: 'Upload',
             infoTitle: 'Upload'
           });
-          if (t.msg) showToast(t.kind, t.title, t.msg);
+          if (t.msg) Toast.show(t.kind, t.title, t.msg);
 
           if (data.stats) applyStats(data.stats);
           else refreshStats();
@@ -1391,23 +1430,22 @@
           setProgress(100);
           setTimeout(resetProgress, 600);
 
-          // keep busy until list refresh completes (upload is a full reset)
-          runQuery(true, { manageBusy:false }).finally(finishUpload);
+          runQuery(true).finally(finishUpload);
         } else {
-          showToast('danger', 'Upload', 'Upload failed (server error).');
+          Toast.show('danger', 'Upload', 'Upload failed (server error).');
           setTimeout(resetProgress, 600);
           finishUpload();
         }
       };
 
       xhr.onerror = function(){
-        showToast('danger', 'Upload', 'Upload failed (network error).');
+        Toast.show('danger', 'Upload', 'Upload failed (network error).');
         setTimeout(resetProgress, 600);
         finishUpload();
       };
 
       xhr.onabort = function(){
-        showToast('warning', 'Upload', 'Upload aborted.');
+        Toast.show('warning', 'Upload', 'Upload aborted.');
         setTimeout(resetProgress, 600);
         finishUpload();
       };
@@ -1419,48 +1457,6 @@
   /* =========================
      SHARE / LINKS
      ========================= */
-
-  // Preserve already-known shared URLs across list refreshes (from pageState)
-  function indexExistingUrlsByName(){
-    var map = Object.create(null);
-    for (var i = 0; i < pageState.files.length; i++) {
-      var it = pageState.files[i];
-      if (!it) continue;
-      var n = String(it.name || '');
-      if (!n) continue;
-      if (it.shared && it.url) map[n] = String(it.url);
-    }
-    return map;
-  }
-
-  // Stronger: preserve URLs from the current DOM pills (survives even if pageState has no urls)
-  function indexVisibleUrlsFromDom(){
-    var map = Object.create(null);
-    if (!DOM.grid) return map;
-
-    var cards = DOM.grid.querySelectorAll('.file-card[data-shared="1"]');
-    for (var i = 0; i < cards.length; i++) {
-      var card = cards[i];
-      var wrapper = card.closest('[data-file-card]');
-      if (!wrapper) continue;
-
-      var key = String(wrapper.getAttribute('data-file-card') || '');
-      var fn = decName(key);
-      if (!fn) continue;
-
-      var u = String(card.getAttribute('data-url') || '').trim();
-      if (!u) {
-        // fallback: read visible text if data-url isn't set
-        var span = wrapper.querySelector('[data-link-text]');
-        if (span) u = String(span.textContent || '').trim();
-        if (u === 'loading…') u = '';
-      }
-
-      if (u) map[fn] = u;
-    }
-    return map;
-  }
-
   async function getShortUrl(filename, mode){
     mode = String(mode || 'make_link');
 
@@ -1505,7 +1501,6 @@
 
     var data = null;
     try { data = await res.json(); } catch(e) {}
-
     if (!res.ok || !data) throw new Error('Unshare failed');
     return data;
   }
@@ -1556,7 +1551,7 @@
     var shareBtn = wrapper.querySelector('[data-share-btn]');
     if (shareBtn) shareBtn.textContent = isShared ? 'Unshare' : 'Share';
 
-    UI.applyBusyToGrid();
+    UI.applyGridPolicy();
   }
 
   function ensureUrlForFile(filename){
@@ -1607,18 +1602,16 @@
   }
 
   async function onLinkPillClick(pill){
-    if (UI.busy) {
-      showToast('info', 'Busy', 'Another operation is in progress. Please wait.');
-      return;
-    }
-    if (__mcIndexChangedHard) {
-      showIndexChangedModal();
-      return;
-    }
+    if (HardLock.isHard()) { HardLock.show(); return; }
 
     var key = String(pill.getAttribute('data-f') || '');
     var fn = decName(key);
     if (!fn) return;
+
+    if (RowBusy.isBusy(fn)) {
+      Toast.show('info', 'Busy', 'This file is already being processed.');
+      return;
+    }
 
     var f = null;
     for (var i = 0; i < pageState.files.length; i++) {
@@ -1626,31 +1619,31 @@
     }
     if (!f || !f.shared) return;
 
-    replaceSearchToastForAction();
+    Toast.priorityAction();
 
     var url = String(f.url || '');
     if (!url) url = await ensureUrlForFile(fn) || '';
     if (!url) {
-      showToast('danger', 'Shared link', 'Could not load shared link.');
+      Toast.show('danger', 'Shared link', 'Could not load shared link.');
       return;
     }
 
     try {
       await navigator.clipboard.writeText(url);
-      showToast('success', 'Shared link', 'Shared link copied.');
+      Toast.show('success', 'Shared link', 'Shared link copied.');
     } catch (e) {
-      showToast('danger', 'Shared link', 'Clipboard copy failed.');
+      Toast.show('danger', 'Shared link', 'Clipboard copy failed.');
     }
   }
 
   async function toggleShareByFilename(file){
-    if (UI.busy) { showToast('info', 'Busy', 'Another operation is in progress. Please wait.'); return; }
-    if (__mcIndexChangedHard) { showIndexChangedModal(); return; }
-
     file = String(file || '');
     if (!file) return;
 
-    replaceSearchToastForAction();
+    if (RowBusy.isBusy(file)) { Toast.show('info', 'Busy', 'This file is already being processed.'); return; }
+    if (HardLock.isHard()) { HardLock.show(); return; }
+
+    Toast.priorityAction();
 
     var f = null;
     for (var i = 0; i < pageState.files.length; i++) {
@@ -1660,27 +1653,33 @@
 
     if (!isShared) {
       try {
-        UI.setBusy(true);
+        RowBusy.set(file, true);
+
         var url = await getShortUrl(file, 'make_link');
         patchVisibleCard(file, true, url);
-        await navigator.clipboard.writeText(url);
-        showToast('success', 'Shared link', 'Shared link copied.');
-        readInputsIntoQuery();
 
-        // If in shared-only mode, new share should appear and ordering may change => refresh to keep orientation
+        try {
+          await navigator.clipboard.writeText(url);
+          Toast.show('success', 'Shared link', 'Shared link copied.');
+        } catch (eClip) {
+          Toast.show('warning', 'Shared link', 'Link created, but clipboard copy failed.');
+        }
+
+        readInputsIntoQuery();
         if (query.flags === 'shared') {
           await refreshToDesiredCount('Index', 'Could not refresh list (network/server error).');
         }
       } catch (e) {
-        showToast('danger', 'Shared link', (e && e.message) ? e.message : 'Failed to create/copy link.');
+        Toast.show('danger', 'Shared link', (e && e.message) ? e.message : 'Failed to create link.');
       } finally {
-        UI.setBusy(false);
+        RowBusy.set(file, false);
       }
       return;
     }
 
     try {
-      UI.setBusy(true);
+      RowBusy.set(file, true);
+
       var resp = await unshareOnServer(file);
 
       var okMsgs = (resp && Array.isArray(resp.ok)) ? resp.ok : [];
@@ -1693,7 +1692,7 @@
         warnTitle: 'Shared link',
         errorTitle: 'Shared link'
       });
-      if (t.msg) showToast(t.kind, t.title, t.msg);
+      if (t.msg) Toast.show(t.kind, t.title, t.msg);
 
       if (resp && resp.stats) applyStats(resp.stats);
       else refreshStats();
@@ -1701,35 +1700,35 @@
       readInputsIntoQuery();
       await refreshToDesiredCount('Index', 'Could not refresh list (network/server error).');
     } catch (e2) {
-      showToast('danger', 'Shared link', 'Shared link delete failed.');
+      Toast.show('danger', 'Shared link', 'Shared link delete failed.');
     } finally {
-      UI.setBusy(false);
+      RowBusy.set(file, false);
     }
   }
 
   async function downloadByFilename(file){
-    if (UI.busy) { showToast('info', 'Busy', 'Another operation is in progress. Please wait.'); return; }
-    if (__mcIndexChangedHard) { showIndexChangedModal(); return; }
-
     file = String(file || '');
     if (!file) return;
 
-    replaceSearchToastForAction();
+    if (RowBusy.isBusy(file)) { Toast.show('info', 'Busy', 'This file is already being processed.'); return; }
+    if (HardLock.isHard()) { HardLock.show(); return; }
+
+    Toast.priorityAction();
 
     try {
-      UI.setBusy(true);
+      RowBusy.set(file, true);
       var url = await getShortUrl(file, 'get_direct');
-      showToast('success', 'Download', 'Download started.');
+      Toast.show('success', 'Download', 'Download started.');
       startDownloadNoNav(url);
     } catch (e) {
-      showToast('danger', 'Download', (e && e.message) ? e.message : 'Failed to start download.');
+      Toast.show('danger', 'Download', (e && e.message) ? e.message : 'Failed to start download.');
     } finally {
-      UI.setBusy(false);
+      RowBusy.set(file, false);
     }
   }
 
   /* =========================
-     DELEGATED FILE ACTIONS (NO onclick)
+     DELEGATED FILE ACTIONS
      ========================= */
   function wireDelegatedFileActions(){
     if (!DOM.grid) return;
@@ -1787,7 +1786,7 @@
     if (!ok.length && !err.length) return;
 
     var t = classifyToast(ok, err, { successTitle:'Success', warnTitle:'Warning', errorTitle:'Error' });
-    if (t.msg) showToast(t.kind, t.title, t.msg);
+    if (t.msg) Toast.show(t.kind, t.title, t.msg);
   }
 
   function initSearch(){
@@ -1800,7 +1799,7 @@
     }
 
     var onType = debounce(function(){
-      if (UI.busy || __mcIndexChangedHard) return;
+      if (HardLock.isHard()) return;
       readInputsIntoQuery();
       runQuery(true);
     }, 160);
@@ -1809,7 +1808,7 @@
 
     if (DOM.search.from) {
       L.on(DOM.search.from, 'change', function(){
-        if (UI.busy || __mcIndexChangedHard) return;
+        if (HardLock.isHard()) return;
         readInputsIntoQuery();
         runQuery(true);
       });
@@ -1817,44 +1816,46 @@
 
     if (DOM.search.to) {
       L.on(DOM.search.to, 'change', function(){
-        if (UI.busy || __mcIndexChangedHard) return;
+        if (HardLock.isHard()) return;
         readInputsIntoQuery();
         runQuery(true);
       });
     }
 
-    // flags dropdown items (data-flag)
     L.on(document, 'click', function(ev){
       var t = ev.target;
       if (!(t instanceof Element)) return;
       var item = t.closest('[data-flag]');
       if (!item) return;
-      if (UI.busy || __mcIndexChangedHard) return;
+      if (HardLock.isHard()) return;
       var v = String(item.getAttribute('data-flag') || 'all');
       setFlagsUI(v, false);
     });
 
     if (DOM.buttons.searchClear) {
       L.on(DOM.buttons.searchClear, 'click', function(){
-        if (UI.busy || __mcIndexChangedHard) return;
+        if (HardLock.isHard()) return;
         clearInputs();
-        hideSearchResultsToast();
+        Toast.hideSearch();
         readInputsIntoQuery();
         runQuery(true);
-        if (DOM.search.q) DOM.search.q.focus();
+        // IMPORTANT: do NOT refocus search field after Clear
       });
     }
 
-    // Show more: predictable paging: offset comes from server pagination state, not from current length
     if (DOM.buttons.showMore) {
       L.on(DOM.buttons.showMore, 'click', function(){
-        if (UI.busy || __mcIndexChangedHard) return;
+        if (HardLock.isHard()) return;
+
+        // Disable ONLY Show More while loading
+        setEnabled(DOM.buttons.showMore, false);
 
         var nextOffset = Number(pageState.offset || 0);
 
-        UI.setBusy(true);
         fetchListSafe(nextOffset, true, 'Index', 'Could not load more items.')
-          .finally(function(){ UI.setBusy(false); });
+          .finally(function(){
+            UI.applyButtons(); // restores showMore depending on policy/hasMore rendering
+          });
       });
     }
 
@@ -1879,41 +1880,36 @@
 
   function initInfoModal(){
     if (!DOM.infoModal || !window.bootstrap) return;
-
     L.on(DOM.infoModal, 'show.bs.modal', function(){
       syncInfoModalFromUI();
     });
   }
 
   function initInitialPaint(){
-    // If server says index changed/missing at boot, hard-lock UI and show modal.
-    if (Number(BOOT.indexChanged || 0) === 1) {
-      showIndexChangedModal();
-    }
+    if (Number(BOOT.indexChanged || 0) === 1) HardLock.show();
 
-    // ensure delete-all policy is correct even before stats refresh completes
     UI.setDeleteAllHasFiles(pageState.total > 0);
-
-    // apply initial lock/busy policy to buttons
     UI.setBusy(false);
 
     updateCounts(pageState.files.length, pageState.total);
 
-    // best-effort hasMore on boot (server still authoritative after first ajax list)
     var hasMoreBoot = (pageState.total > pageState.files.length);
     renderFiles(pageState.files, pageState.total, splitTerms(''), hasMoreBoot);
 
     ensureVisibleSharedUrls();
   }
 
-  // teardown on navigation
+  /* =========================
+     TEARDOWN
+     ========================= */
   L.on(window, 'pagehide', function(){
-    try { hideSearchResultsToast(); } catch (e0) {}
-    try { hideMainToast(); } catch (e1) {}
+    try { Toast.hideAll(); } catch (e0) {}
     L.dispose();
   });
 
-  // boot
+  /* =========================
+     BOOT
+     ========================= */
   initFlash();
   initInitialPaint();
   initSearch();
