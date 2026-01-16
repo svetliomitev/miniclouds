@@ -349,12 +349,15 @@
   })();
 
   /* =========================
-     TOASTS (single owner)
-     ========================= */
+    TOASTS (single owner)
+    ========================= */
   var Toast = (function(){
     var mainTimer = 0;
     var searchTimer = 0;
     var suppressSearchUntil = 0;
+
+    // lifecycle scopes (so we never leak handlers / never collide)
+    var mainScope = null;
 
     function toastIconClassFor(kind){
       switch (kind) {
@@ -368,6 +371,13 @@
 
     function hideMain(){
       if (mainTimer) { clearTimeout(mainTimer); mainTimer = 0; }
+
+      // dispose any handlers belonging to the currently shown main toast
+      if (mainScope) {
+        try { mainScope.dispose(); } catch (e0) {}
+        mainScope = null;
+      }
+
       if (DOM.toast && DOM.toast.close) DOM.toast.close.disabled = false;
       if (DOM.toast && DOM.toast.el) forceHide(DOM.toast.el);
     }
@@ -402,6 +412,7 @@
       var t = DOM.toast;
       if (!t || !t.el) return;
 
+      // hard reset previous main toast + its handlers
       hideMain();
 
       var cls = 'toast border-0 w-100 pretty';
@@ -416,7 +427,28 @@
       if (t.title) t.title.textContent = title || 'Message';
       if (t.body) t.body.textContent = msg || '';
 
-      if (t.close) t.close.disabled = !!opts.noClose;
+      // close button policy
+      var closable = !opts.noClose;
+
+      if (t.close) {
+        // Keep spacing: hide visually but preserve layout when not closable
+        if (!closable) t.close.classList.add('invisible');
+        else t.close.classList.remove('invisible');
+
+        t.close.disabled = !closable;
+      }
+
+      // attach close handler ONLY for this toast instance (lifecycle-safe)
+      if (closable && t.close) {
+        mainScope = L.scope();
+        mainScope.on(t.close, 'click', function(ev){
+          ev.preventDefault();
+          ev.stopPropagation();
+          hideMain();
+        });
+      } else {
+        mainScope = null;
+      }
 
       forceShow(t.el);
       t.el.classList.add('show');
