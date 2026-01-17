@@ -1869,14 +1869,20 @@
           (DOM.search.flagsBtn &&
             String(DOM.search.flagsBtn.getAttribute('data-value') || 'all') !== 'all'));
 
-        if (!hadFilter) return; // <-- true no-op
+        // NEW: if user expanded the list via "Show more", Reset should restore the initial (first page) state
+        var expandedBeyondPage = (pageState && Array.isArray(pageState.files) && pageState.files.length > PAGE_SIZE);
+
+        // True no-op only when no filters AND not expanded
+        if (!hadFilter && !expandedBeyondPage) return;
 
         clearInputs();
         Toast.hideSearch();
         readInputsIntoQuery();
+
+        // reset=true => collapses back to first page and reloads
         runQuery(true);
 
-        Toast.show('success', 'Clear results', 'Filters and results cleared.', { ttl: 1600 });
+        Toast.show('success', 'Reset results', 'Results reset to initial state.', { ttl: 1600 });
       });
     }
 

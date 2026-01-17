@@ -698,7 +698,7 @@ $totalHuman = format_bytes((int)$totalBytes);
 
             <div class="col-12 col-md-2 d-grid">
               <button type="button" class="btn btn-outline-warning search-clear" id="searchClear">
-                Clear
+                Reset
               </button>
             </div>
 
