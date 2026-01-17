@@ -409,31 +409,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $ok[] = 'Files indexed: ' . count($fileIndex) . '. Shared records: ' . count($sharedSet) . '.';
     }
     elseif ($action === 'reinstall') {
-        $ht = __DIR__ . '/.htaccess';
-        $st = mc_state_path();
+    // Reinstall is now a RECONFIGURE entry point:
+    // - Do NOT delete install_state.json
+    // - Keep .htaccess in place (it's what protects install.php / index.php)
+    // - Just redirect to install.php (which is protected by admin session)
 
-        $ht_ok = true;
-        $st_ok = true;
-
-        if (is_file($ht)) {
-            $ht_ok = @unlink($ht);
-            if (!$ht_ok) $err[] = 'Failed to remove .htaccess (check permissions).';
-        } else {
-            $err[] = '.htaccess not found (already removed?).';
-        }
-
-        if (is_file($st)) {
-            $st_ok = @unlink($st);
-            if (!$st_ok) $err[] = 'Failed to remove install_state.json (check permissions).';
-        } else {
-            $err[] = 'install_state.json not found (already removed?).';
-        }
-
-        if ($ht_ok && $st_ok) {
-            $ok[] = 'Reinstall initiated. Redirecting to installer...';
-            $base = mc_base_uri();
-            $redirectTo = ($base === '' ? '' : $base) . '/install.php';
-        }
+    $ok[] = 'Reconfigure: redirecting to installer…';
+    $base = mc_base_uri();
+    $redirectTo = ($base === '' ? '' : $base) . '/install.php';
     }
     else {
         $err[] = 'Unknown action.';
@@ -499,6 +482,15 @@ $APP_VERSION = (string)($state['version'] ?? 'unknown');
 
 $INSTANCE_ID = (string)($state['instance_id'] ?? '');
 $INSTANCE_ID = (preg_match('~^[a-f0-9]{16,64}$~i', $INSTANCE_ID) ? strtolower($INSTANCE_ID) : '');
+
+$ALLOW_IPS = $state['allow_ips'];
+
+$tmp = [];
+foreach ($ALLOW_IPS as $ip) {
+    $ip = trim((string)$ip);
+    if ($ip !== '') $tmp[] = $ip;
+}
+$ALLOWED_IPS = $tmp ? implode(', ', $tmp) : 'Any';
 
 $INSTALLED_AT_RAW = (string)($state['installed_at'] ?? '');
 $INSTALLED_AT_TS  = ($INSTALLED_AT_RAW !== '' ? strtotime($INSTALLED_AT_RAW) : false);
@@ -630,14 +622,14 @@ $totalHuman = format_bytes((int)$totalBytes);
             </div>
 
             <div class="col-12 col-md-4">
-                <form method="post" class="js-ajax" id="reinstallForm"
-                    data-confirm="<?=h('Reinstall ' . $APP_NAME . '? This will remove .htaccess and install_state.json and redirect you to installer.')?>">
+              <form method="post" class="js-ajax" id="reinstallForm"
+                    data-confirm="<?=h('Reconfigure ' . $APP_NAME . '? This will open the installer to update settings (password can be left blank to keep current).')?>">
                 <input type="hidden" name="csrf" value="<?=h($_SESSION['csrf'])?>">
                 <input type="hidden" name="action" value="reinstall">
                 <button class="btn btn-outline-warning w-100" type="submit" id="reinstallBtn">
-                    Reinstall App
+                  Reconfigure App
                 </button>
-                </form>
+              </form>
             </div>
 
             <div class="col-12 col-md-4">
@@ -905,6 +897,13 @@ $totalHuman = format_bytes((int)$totalBytes);
             </div>
           </div>
 
+            <div class="mc-info-section">
+              <div class="mc-info-h">Allowed IPs</div>
+              <div class="mc-info-v">
+                <span class="mc-code-primary"><?= h($ALLOWED_IPS) ?></span>
+              </div>
+            </div>
+
         </div>
 
         <hr class="my-3">
@@ -931,23 +930,23 @@ $totalHuman = format_bytes((int)$totalBytes);
           </p>
           <ul class="mc-info-list">
             <li>
-              <span class="mc-code-primary">upload_max_filesize</span> —
+              <span class="mc-code-primary">upload_max_filesize</span> -
               maximum size of a <em>single</em> uploaded file.
             </li>
             <li>
-              <span class="mc-code-primary">post_max_size</span> —
+              <span class="mc-code-primary">post_max_size</span> -
               maximum total size of the whole upload request (all files together + form data).
             </li>
             <li>
-              <span class="mc-code-primary">memory_limit</span> —
+              <span class="mc-code-primary">memory_limit</span> -
               should be comfortably above what PHP needs during upload/processing (too low can break uploads).
             </li>
             <li>
-              <span class="mc-code-primary">max_file_uploads</span> —
+              <span class="mc-code-primary">max_file_uploads</span> -
               maximum number of files per request.
             </li>
             <li>
-              <span class="mc-code-primary">max_input_vars</span> —
+              <span class="mc-code-primary">max_input_vars</span> -
               not usually a blocker for file uploads, but can affect large forms in general.
             </li>
           </ul>
@@ -957,11 +956,11 @@ $totalHuman = format_bytes((int)$totalBytes);
           </p>
           <ul class="mc-info-list">
             <li>
-              <span class="mc-code-primary">client_max_body_size</span> —
+              <span class="mc-code-primary">client_max_body_size</span> -
               Nginx request body limit (common with reverse-proxy setups).
             </li>
             <li>
-              <span class="mc-code-primary">LimitRequestBody</span> —
+              <span class="mc-code-primary">LimitRequestBody</span> -
               Apache request body limit.
             </li>
           </ul>
@@ -993,33 +992,6 @@ $totalHuman = format_bytes((int)$totalBytes);
         <button type="button" class="btn btn-outline-info" data-bs-dismiss="modal" id="mcIndexChangedCloseBtn">
           OK
         </button>
-      </div>
-
-    </div>
-  </div>
-</div>
-
-<!-- REBUILD PROGRESS (blocking) -->
-<div class="modal fade" id="mcRebuildModal" tabindex="-1"
-     aria-labelledby="mcRebuildModalLabel" aria-hidden="true"
-     data-bs-backdrop="static" data-bs-keyboard="false">
-  <div class="modal-dialog modal-dialog-centered">
-    <div class="modal-content">
-
-      <div class="modal-header">
-        <h5 class="modal-title" id="mcRebuildModalLabel">Rebuild Index</h5>
-      </div>
-
-      <div class="modal-body">
-        <div class="d-flex align-items-center gap-2 mb-2">
-          <div class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></div>
-          <div id="mcRebuildStatusText">Rebuilding indexes…</div>
-        </div>
-        <ul class="small text-body-secondary mb-0" id="mcRebuildSteps">
-          <li>Scanning uploads and rebuilding file index…</li>
-          <li>Validating shared records (links/byname)…</li>
-          <li>Saving baseline fingerprint…</li>
-        </ul>
       </div>
 
     </div>

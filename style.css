@@ -259,7 +259,7 @@ mark{ padding: .05em .2em; border-radius: .25rem; }
    - blue “token” look uses borders/background, not bold
    ========================= */
 .mc-info-modal-body{
-  font-size: .9rem;
+  font-size: .85rem;   /* unified, slightly smaller info typography */
   line-height: 1.35;
   font-weight: 400;
 }
@@ -269,9 +269,15 @@ mark{ padding: .05em .2em; border-radius: .25rem; }
   grid-template-columns: 1fr;
   gap: .75rem;
 }
+
 @media (min-width: 768px){
   .mc-info-grid{
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  /* 4th card (Allowed IPs) goes to its own full row */
+  .mc-info-grid > .mc-info-section:nth-child(4){
+    grid-column: 1 / -1;
   }
 }
 
@@ -313,6 +319,7 @@ mark{ padding: .05em .2em; border-radius: .25rem; }
   margin: 0;
   padding-left: 1.1rem;
 }
+
 .mc-info-list li{
   margin: .25rem 0;
   font-weight: 400;
@@ -500,3 +507,7 @@ mark{ padding: .05em .2em; border-radius: .25rem; }
 .mc-w-71{width:71%}.mc-w-72{width:72%}.mc-w-73{width:73%}.mc-w-74{width:74%}.mc-w-75{width:75%}.mc-w-76{width:76%}.mc-w-77{width:77%}.mc-w-78{width:78%}.mc-w-79{width:79%}.mc-w-80{width:80%}
 .mc-w-81{width:81%}.mc-w-82{width:82%}.mc-w-83{width:83%}.mc-w-84{width:84%}.mc-w-85{width:85%}.mc-w-86{width:86%}.mc-w-87{width:87%}.mc-w-88{width:88%}.mc-w-89{width:89%}.mc-w-90{width:90%}
 .mc-w-91{width:91%}.mc-w-92{width:92%}.mc-w-93{width:93%}.mc-w-94{width:94%}.mc-w-95{width:95%}.mc-w-96{width:96%}.mc-w-97{width:97%}.mc-w-98{width:98%}.mc-w-99{width:99%}.mc-w-100{width:100%}
+
+/* Ensure Bootstrap modals are above our fixed UI layers (toasts, back-to-top, etc.) */
+.modal{ z-index: 3000; }
+.modal-backdrop{ z-index: 2990; }

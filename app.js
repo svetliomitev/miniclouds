@@ -151,9 +151,7 @@
     backToTop: document.getElementById('backToTop'),
     infoModal: document.getElementById('mcInfoModal'),
 
-    indexChangedModal: document.getElementById('mcIndexChangedModal'),
-    rebuildModal: document.getElementById('mcRebuildModal'),
-    rebuildStatusText: document.getElementById('mcRebuildStatusText')
+    indexChangedModal: document.getElementById('mcIndexChangedModal')
   };
 
   /* =========================
@@ -1229,8 +1227,8 @@
 
       // pre-action UI effects
       if (isRebuild) {
-        if (DOM.rebuildStatusText) DOM.rebuildStatusText.textContent = 'Rebuilding indexes…';
-        modalShow(DOM.rebuildModal);
+        // rebuild progress: warning working toast (no close button, keep spacing)
+        Toast.workingWarning('Rebuild progress', 'Rebuilding index now...');
         UI.setBusy(true);
       } else if (actionName === 'delete_all') {
         // disable ONLY Delete All and show warning working toast
@@ -1240,83 +1238,79 @@
         RowBusy.set(fileName, true);
       }
 
-      postJson(form.getAttribute('action') || 'index.php', fdPeek)
-        .then(function(r){
-          if (!r.data) {
-            var preview = String(r.txt || '').trim();
-            if (preview.length > 220) preview = preview.slice(0, 220) + '…';
-            if (r.redirected) Toast.show('danger', 'Error', 'Server redirected instead of returning JSON (AJAX not detected).');
-            else Toast.show('danger', 'Error', 'Non-JSON response (' + r.status + '): ' + (preview || 'empty'));
-            return null;
-          }
-
-          var okMsgs = Array.isArray(r.data.ok) ? r.data.ok : [];
-          var errMsgs = Array.isArray(r.data.err) ? r.data.err : [];
-
-          var t = classifyToast(okMsgs, errMsgs, {
-            successTitle: 'Success',
-            warnTitle: 'Warning',
-            errorTitle: 'Error',
-            infoTitle: 'Info'
-          });
-
-          if (t && t.msg) Toast.show(t.kind, t.title, t.msg);
-          else Toast.hideMain();
-
-          // STRICT: close rebuild modal early when JSON arrived
-          if (isRebuild) {
-            try { modalHide(DOM.rebuildModal); } catch (e0) {}
-            try { mcModalCleanup(); } catch (e1) {}
-            UI.setBusy(false);
-          }
-
-          if (r.data && r.data.redirect) {
-            var to = String(r.data.redirect || '').trim();
-            if (to) {
-              __mcNavigating = true;
-              Toast.show('warning', 'Reinstall', 'Redirecting to installer...');
-              setTimeout(function(){ window.location.href = to; }, 250);
+      // --- POST ---
+      function doPost(){
+        return postJson(form.getAttribute('action') || 'index.php', fdPeek)
+          .then(function(r){
+            if (!r.data) {
+              var preview = String(r.txt || '').trim();
+              if (preview.length > 220) preview = preview.slice(0, 220) + '…';
+              if (r.redirected) Toast.show('danger', 'Error', 'Server redirected instead of returning JSON (AJAX not detected).');
+              else Toast.show('danger', 'Error', 'Non-JSON response (' + r.status + '): ' + (preview || 'empty'));
               return null;
             }
-          }
 
-          if (r.data && r.data.stats) applyStats(r.data.stats);
-          else refreshStats();
+            var okMsgs = Array.isArray(r.data.ok) ? r.data.ok : [];
+            var errMsgs = Array.isArray(r.data.err) ? r.data.err : [];
 
-          // delete_all is a reset
-          if (actionName === 'delete_all') {
-            clearInputs();
+            var t = classifyToast(okMsgs, errMsgs, {
+              successTitle: 'Success',
+              warnTitle: 'Warning',
+              errorTitle: 'Error',
+              infoTitle: 'Info'
+            });
+
+            if (t && t.msg) Toast.show(t.kind, t.title, t.msg);
+            else Toast.hideMain();
+
+            if (r.data && r.data.redirect) {
+              var to = String(r.data.redirect || '').trim();
+              if (to) {
+                __mcNavigating = true;
+                Toast.show('warning', 'Reinstall', 'Redirecting to installer...');
+                setTimeout(function(){ window.location.href = to; }, 250);
+                return null;
+              }
+            }
+
+            if (r.data && r.data.stats) applyStats(r.data.stats);
+            else refreshStats();
+
+            // delete_all is a reset
+            if (actionName === 'delete_all') {
+              clearInputs();
+              readInputsIntoQuery();
+              return runQuery(true);
+            }
+
             readInputsIntoQuery();
-            return runQuery(true);
-          }
+            return refreshToDesiredCount('Index', 'Could not refresh list (network/server error).');
+          })
+          .catch(function(){
+            if (!__mcNavigating) Toast.show('danger', 'Error', 'Request failed (network error).');
+            return null;
+          })
+          .finally(function(){
+            if (__mcNavigating) return;
 
-          readInputsIntoQuery();
-          return refreshToDesiredCount('Index', 'Could not refresh list (network/server error).');
-        })
-        .catch(function(){
-          if (!__mcNavigating) Toast.show('danger', 'Error', 'Request failed (network error).');
-          return null;
-        })
-        .finally(function(){
-          if (__mcNavigating) return;
+            // ALWAYS end rebuild busy-state on completion (success or error)
+            if (isRebuild) {
+              try { UI.setBusy(false); } catch (e0) {}
+            }
 
-          if (isRebuild) {
-            try { UI.setBusy(false); } catch (e0) {}
-            try { modalHide(DOM.rebuildModal); } catch (e1) {}
-            try { mcModalCleanup(); } catch (e2) {}
-          }
+            if (actionName === 'delete_all') {
+              UI.applyButtons();
+            }
 
-          if (actionName === 'delete_all') {
-            UI.applyButtons();
-          }
+            if (actionName === 'delete_one' && fileName) {
+              RowBusy.set(fileName, false);
+            }
 
-          if (actionName === 'delete_one' && fileName) {
-            RowBusy.set(fileName, false);
-          }
+            refreshStats();
+          });
+      }
 
-          mcModalCleanup();
-          refreshStats();
-        });
+      doPost();
     }
 
     L.on(document, 'submit', onSubmit, true);
@@ -1867,11 +1861,22 @@
     if (DOM.buttons.searchClear) {
       L.on(DOM.buttons.searchClear, 'click', function(){
         if (HardLock.isHard()) return;
+
+        var hadFilter =
+          ((DOM.search.q && String(DOM.search.q.value || '').trim()) ||
+          (DOM.search.from && String(DOM.search.from.value || '')) ||
+          (DOM.search.to && String(DOM.search.to.value || '')) ||
+          (DOM.search.flagsBtn &&
+            String(DOM.search.flagsBtn.getAttribute('data-value') || 'all') !== 'all'));
+
+        if (!hadFilter) return; // <-- true no-op
+
         clearInputs();
         Toast.hideSearch();
         readInputsIntoQuery();
         runQuery(true);
-        // IMPORTANT: do NOT refocus search field after Clear
+
+        Toast.show('success', 'Clear results', 'Filters and results cleared.', { ttl: 1600 });
       });
     }
 

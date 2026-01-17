@@ -245,13 +245,139 @@ function mc_read_state(): array {
     if (!is_string($raw) || $raw === '') return [];
 
     $j = json_decode($raw, true);
-    return is_array($j) ? $j : [];
+    if (!is_array($j)) return [];
+
+    /* ---------------------------------
+       Normalize allow_ips (canonical: array)
+       - supports old string format
+       - cleans whitespace
+       - de-duplicates
+       --------------------------------- */
+    if (array_key_exists('allow_ips', $j)) {
+        if (is_string($j['allow_ips'])) {
+            $s = trim($j['allow_ips']);
+            if ($s === '') {
+                $j['allow_ips'] = [];
+            } else {
+                $parts = preg_split('~[,\s]+~', $s, -1, PREG_SPLIT_NO_EMPTY);
+                $out = [];
+                foreach ($parts as $p) {
+                    $p = trim((string)$p);
+                    if ($p !== '') $out[] = $p;
+                }
+                $j['allow_ips'] = array_values(array_unique($out));
+            }
+        } elseif (is_array($j['allow_ips'])) {
+            $out = [];
+            foreach ($j['allow_ips'] as $p) {
+                $p = trim((string)$p);
+                if ($p !== '') $out[] = $p;
+            }
+            $j['allow_ips'] = array_values(array_unique($out));
+        } else {
+            // unexpected type → make safe
+            $j['allow_ips'] = [];
+        }
+    } else {
+        // always present for callers
+        $j['allow_ips'] = [];
+    }
+
+    return $j;
 }
 
 /* installed iff install_state.json says installed=true (do NOT depend on .htaccess) */
 function mc_is_installed(): bool {
     $j = mc_read_state();
     return (($j['installed'] ?? false) === true);
+}
+
+/* =========================
+   INSTALLER HELPERS (install.php)
+   ========================= */
+
+function mc_rewrite_base(): string {
+    $b = mc_base_uri();
+    return ($b === '' ? '/' : ($b . '/')); // "/" or "/subdir/app/"
+}
+
+/**
+ * Writes install_state.json (atomic best-effort) and preserves instance_id if already present.
+ * Stores installer fields EXCEPT password.
+ */
+function mc_write_install_state(
+    string $version = '',
+    string $appName = '',
+    int $pageSize = 0,
+    string $adminUser = '',
+    array $allowIps = []
+): void {
+    $existing = mc_read_state();
+    $existingId = '';
+    $eid = (string)($existing['instance_id'] ?? '');
+
+    // accept 20..64 hex; keep whatever already exists if valid
+    if ($eid !== '' && preg_match('~^[a-f0-9]{20,64}$~i', $eid)) {
+        $existingId = strtolower($eid);
+    }
+
+    $appName = trim((string)$appName);
+    $appName = preg_replace('~\s+~', ' ', $appName) ?: '';
+
+    $payload = [
+        'installed'    => true,
+        'installed_at' => date('c'),
+        'instance_id'  => ($existingId !== '' ? $existingId : bin2hex(random_bytes(10))), // 80-bit hex (20 chars)
+    ];
+
+    $adminUser = trim((string)$adminUser);
+    if ($adminUser !== '') $payload['admin_user'] = $adminUser;
+
+    // store normalized allowlist as array, always present
+    $norm = [];
+    foreach ($allowIps as $v) {
+        if (!is_string($v)) continue;
+        $v = trim($v);
+        if ($v !== '') $norm[] = $v;
+    }
+    $payload['allow_ips'] = array_values($norm);
+
+    if ($version !== '') $payload['version'] = $version;
+    if ($appName !== '') $payload['app_name'] = $appName;
+
+    if ($pageSize > 0) {
+        if ($pageSize < 20) $pageSize = 20;
+        if ($pageSize > 200) $pageSize = 200;
+        $payload['page_size'] = (int)$pageSize;
+    }
+
+    if (!atomic_write_json(mc_state_path(), $payload)) {
+        throw new RuntimeException('Cannot write install_state.json');
+    }
+    @chmod(mc_state_path(), 0644);
+}
+
+/**
+ * Read existing bcrypt hash from .htpasswd (single-line "user:hash").
+ * Returns '' if missing/invalid/unreadable.
+ */
+function mc_htpasswd_read_hash(string $htpasswdPath): string {
+    if (!is_file($htpasswdPath) || !is_readable($htpasswdPath)) return '';
+
+    $raw = @file_get_contents($htpasswdPath);
+    if (!is_string($raw) || $raw === '') return '';
+
+    $line = trim(strtok($raw, "\r\n"));
+    if ($line === '' || strpos($line, ':') === false) return '';
+
+    $parts = explode(':', $line, 2);
+    $hash = trim((string)($parts[1] ?? ''));
+    if ($hash === '') return '';
+
+    // bcrypt ($2y$, $2a$, $2b$)
+    if (!preg_match('~^\$2[aby]\$~', $hash)) return '';
+
+    return $hash;
 }
 
 /**
@@ -422,6 +548,18 @@ function file_index_path(string $cacheDir): string {
     return rtrim($cacheDir, '/\\') . '/file_index.json';
 }
 
+/** Sorting newest uploaded files come first in the list */
+function mc_cmp_file_index_newest_first(array $a, array $b): int {
+    $am = (int)($a['mtime'] ?? 0);
+    $bm = (int)($b['mtime'] ?? 0);
+
+    if ($am !== $bm) return ($bm <=> $am); // DESC (newest first)
+
+    $an = (string)($a['name'] ?? '');
+    $bn = (string)($b['name'] ?? '');
+    return strcmp($an, $bn); // ASC tie-break
+}
+
 /**
  * Load file index. Returns [] if missing/invalid.
  * Format: [ ['name'=>string,'size'=>int,'mtime'=>int], ... ]
@@ -472,9 +610,7 @@ function file_index_load(string $cacheDir): array {
         ];
     }
 
-    usort($out, function($a, $b){
-        return strcmp((string)$a['name'], (string)$b['name']);
-    });
+    usort($out, 'mc_cmp_file_index_newest_first');
 
     apcu_set($k, ['mt' => $mt, 'list' => $out], 0);
     return $out;
@@ -499,9 +635,7 @@ function file_index_save(string $cacheDir, array $fileIndex): bool {
         ];
     }
 
-    usort($out, function($a, $b){
-        return strcmp((string)$a['name'] ?? '', (string)$b['name'] ?? '');
-    });
+    usort($out, 'mc_cmp_file_index_newest_first');
 
     $ok = atomic_write_json($p, $out);
     if ($ok) {
@@ -540,9 +674,7 @@ function file_index_rebuild_from_disk(string $uploadDir): array {
         return [];
     }
 
-    usort($out, function($a, $b){
-        return strcmp((string)$a['name'], (string)$b['name']);
-    });
+    usort($out, 'mc_cmp_file_index_newest_first');
 
     return $out;
 }
@@ -571,9 +703,7 @@ function file_index_upsert(array $fileIndex, array $row): array {
         $fileIndex[] = ['name'=>$name, 'size'=>$size, 'mtime'=>$mtime];
     }
 
-    usort($fileIndex, function($a, $b){
-        return strcmp((string)($a['name'] ?? ''), (string)($b['name'] ?? ''));
-    });
+    usort($fileIndex, 'mc_cmp_file_index_newest_first');
 
     return $fileIndex;
 }
