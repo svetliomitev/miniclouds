@@ -64,8 +64,9 @@ function mc_security_headers(): void
 
     $nonce = mc_csp_nonce();
 
-    $csp =
-        "default-src 'self'; "
+    header(
+        "Content-Security-Policy: "
+        . "default-src 'self'; "
         . "base-uri 'self'; "
         . "form-action 'self'; "
         . "object-src 'none'; "
@@ -74,14 +75,10 @@ function mc_security_headers(): void
         . "style-src 'self' 'nonce-{$nonce}' https://cdn.jsdelivr.net; "
         . "font-src 'self' https://cdn.jsdelivr.net data:; "
         . "img-src 'self' data:; "
-        . "connect-src 'self' https://cdn.jsdelivr.net; ";
-
-    // Only force HTTPS upgrades when the request is already HTTPS (or behind HTTPS proxy).
-    if (mc_is_https_request()) {
-        $csp .= "upgrade-insecure-requests";
-    }
-
-    header("Content-Security-Policy: " . $csp, true);
+        . "connect-src 'self' https://cdn.jsdelivr.net; "
+        . "upgrade-insecure-requests",
+        true
+    );
 }
 
 /* =========================
