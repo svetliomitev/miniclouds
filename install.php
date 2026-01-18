@@ -8,7 +8,7 @@ mc_session_start();
 
 $nonce = mc_csp_nonce();
 
-$APP_VERSION = '1.8.21';
+$APP_VERSION = '1.8.22';
 
 /* =========================
    INSTALLER / RECONFIGURATOR
@@ -347,12 +347,8 @@ echo '<!doctype html><html lang="en"><head>';
 echo '<meta charset="utf-8">';
 echo '<meta name="viewport" content="width=device-width, initial-scale=1">';
 echo '<title>MiniCloudS Installer</title>';
-echo '<link rel="icon" type="image/png" sizes="512x512" href="' .
-     h(rtrim($base, '/') . '/miniclouds-icon.png?v=' . rawurlencode((string)$APP_VERSION)) .
-     '">';
-echo '<link rel="apple-touch-icon" sizes="512x512" href="' .
-     h(rtrim($base, '/') . '/miniclouds-icon.png?v=' . rawurlencode((string)$APP_VERSION)) .
-     '">';
+echo '<link rel="icon" type="image/png" sizes="512x512" href="miniclouds-icon.png?v=' . rawurlencode((string)$APP_VERSION) . '">';
+echo '<link rel="apple-touch-icon" sizes="512x512" href="miniclouds-icon.png?v=' . rawurlencode((string)$APP_VERSION) . '">';
 
 /* installer has its own CSS, no bootstrap needed */
 echo '<style nonce="' . h($nonce) . '">
