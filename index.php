@@ -621,7 +621,7 @@ $totalHuman = format_bytes((int)$totalBytes);
             <div class="row g-2">
               <div class="col-12 col-md-4">
                 <form method="post" class="js-ajax" id="rebuildIndexForm"
-                      data-confirm="Rebuild file index and shared index now?">
+                      data-confirm="Rebuild file index and shared index to match the current content of uploads folder now?">
                   <input type="hidden" name="csrf" value="<?=h($_SESSION['csrf'])?>">
                   <input type="hidden" name="action" value="rebuild_index">
                   <button class="btn btn-outline-info w-100"
@@ -636,7 +636,7 @@ $totalHuman = format_bytes((int)$totalBytes);
 
               <div class="col-12 col-md-4">
                 <form method="post" class="js-ajax" id="reinstallForm"
-                      data-confirm="<?=h('Reconfigure ' . $APP_NAME . '? This will open the installer to update settings (password can be left blank to keep current).')?>">
+                      data-confirm="<?=h('Reconfigure ' . $APP_NAME . '? This will open the installer to update settings (password can be left blank to keep current one). All uploaded files and shared links will be retained.')?>">
                   <input type="hidden" name="csrf" value="<?=h($_SESSION['csrf'])?>">
                   <input type="hidden" name="action" value="reinstall">
                   <button class="btn btn-outline-warning w-100"
@@ -650,7 +650,7 @@ $totalHuman = format_bytes((int)$totalBytes);
               </div>
 
               <div class="col-12 col-md-4">
-                <form method="post" class="js-ajax" id="deleteAllForm" data-confirm="Delete ALL files?">
+                <form method="post" class="js-ajax" id="deleteAllForm" data-confirm="Delete ALL uploaded files and ALL shared links, also clear file index and share index? This cannot be undone.">
                   <input type="hidden" name="csrf" value="<?=h($_SESSION['csrf'])?>">
                   <input type="hidden" name="action" value="delete_all">
                   <button class="btn btn-outline-danger w-100"
@@ -739,7 +739,7 @@ $totalHuman = format_bytes((int)$totalBytes);
           </div>
 
           <div id="filesEmpty" class="<?= ($totalFiles > 0) ? 'd-none' : '' ?>">
-            <div class="alert alert-secondary mb-0" role="alert">Use Clear button to show all files or upload new ones if you have not already.</div>
+            <div class="alert alert-secondary mb-0" role="alert">Use Reset button to show all files or upload new ones if you have not already.</div>
           </div>
 
           <div id="filesGrid" class="row g-2 <?= ($totalFiles > 0) ? '' : 'd-none' ?>">
