@@ -31,7 +31,7 @@ if ($alreadyInstalled) {
 
     mc_require_admin_session_or_pretty_403(
         'Installer is available only to authenticated admins.',
-        'Open index.php, login, then return to install.php to change settings.'
+        'Open index.php, login, then return to install.php to modify settings.'
     );
 }
 
