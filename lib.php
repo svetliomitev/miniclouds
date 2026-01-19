@@ -1448,20 +1448,23 @@ function php_max_file_uploads(): int {
 }
 
 /* =========================
-   ADMIN SESSION (set by index.php after BasicAuth succeeds)
+   ADMIN SESSION (bridged from Apache BasicAuth)
    ========================= */
 
 function mc_mark_admin_session_from_basic_auth(): void {
-    // Only index.php should call this, after mc_session_start().
-    // It marks the session as "admin-ok" when Apache BasicAuth succeeded.
-    if (!empty($_SERVER['REMOTE_USER'])) {
+    // Call after mc_session_start().
+    // Marks the session as "admin-ok" when Apache BasicAuth succeeded.
+    if (session_status() !== PHP_SESSION_ACTIVE) return;
+
+    $ru = (string)($_SERVER['REMOTE_USER'] ?? '');
+    if ($ru !== '') {
         $_SESSION['mc_admin_ok'] = true;
     }
 }
 
 function mc_is_admin_session(): bool {
     return (session_status() === PHP_SESSION_ACTIVE)
-        && !empty($_SESSION['mc_admin_ok'])
+        && isset($_SESSION['mc_admin_ok'])
         && $_SESSION['mc_admin_ok'] === true;
 }
 

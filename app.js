@@ -354,6 +354,10 @@
     var searchTimer = 0;
     var suppressSearchUntil = 0;
 
+    // timestamps to resolve “action toast vs user-driven search”
+    var lastActionAt = 0;
+    var lastUserQueryAt = 0;
+
     // lifecycle scopes (so we never leak handlers / never collide)
     var mainScope = null;
 
@@ -395,12 +399,23 @@
     // “Last action wins”: any action toast kills search toast immediately.
     function priorityAction(){
       hideSearch();
-      suppressSearchUntil = Date.now() + 2200;
+      lastActionAt = Date.now();
+      suppressSearchUntil = lastActionAt + 2200;
+    }
+
+    function noteUserQuery(){
+      lastUserQueryAt = Date.now();
     }
 
     function canShowSearch(isAppend){
       if (isAppend) return true; // append toast is user-driven; always allowed
-      return !(suppressSearchUntil && Date.now() < suppressSearchUntil);
+
+      // If an action toast just fired, suppress automatic search toasts,
+      // BUT allow them immediately if the user changed query/filters after the action.
+      if (suppressSearchUntil && Date.now() < suppressSearchUntil) {
+        return (lastUserQueryAt > lastActionAt);
+      }
+      return true;
     }
 
     function show(kind, title, msg, opts){
@@ -475,7 +490,13 @@
       if (!st || !st.el) return;
 
       // Append toast replaces main toast (explicit user action: Show more)
-      if (isAppend) hideMain();
+      if (isAppend) {
+        hideMain();
+      } else {
+        // If the user initiated a new query after an action toast,
+        // let Search Results replace the main toast (e.g. Reset toast).
+        if (lastUserQueryAt > lastActionAt) hideMain();
+      }
 
       if (!canShowSearch(isAppend)) return;
 
@@ -548,7 +569,8 @@
       hideAll: hideAll,
       hideMain: hideMain,
       hideSearch: hideSearch,
-      priorityAction: priorityAction
+      priorityAction: priorityAction,
+      noteUserQuery: noteUserQuery
     };
   })();
 
@@ -1826,6 +1848,7 @@
 
     var onType = debounce(function(){
       if (HardLock.isHard()) return;
+      Toast.noteUserQuery();
       readInputsIntoQuery();
       runQuery(true);
     }, 160);
@@ -1835,6 +1858,7 @@
     if (DOM.search.from) {
       L.on(DOM.search.from, 'change', function(){
         if (HardLock.isHard()) return;
+        Toast.noteUserQuery();
         readInputsIntoQuery();
         runQuery(true);
       });
@@ -1843,6 +1867,7 @@
     if (DOM.search.to) {
       L.on(DOM.search.to, 'change', function(){
         if (HardLock.isHard()) return;
+        Toast.noteUserQuery();
         readInputsIntoQuery();
         runQuery(true);
       });
@@ -1855,6 +1880,7 @@
       if (!item) return;
       if (HardLock.isHard()) return;
       var v = String(item.getAttribute('data-flag') || 'all');
+      Toast.noteUserQuery();
       setFlagsUI(v, false);
     });
 

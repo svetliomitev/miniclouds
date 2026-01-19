@@ -8,7 +8,7 @@ mc_session_start();
 
 $nonce = mc_csp_nonce();
 
-$APP_VERSION = '1.8.22';
+$APP_VERSION = '1.8.25';
 
 /* =========================
    INSTALLER / RECONFIGURATOR
@@ -25,11 +25,9 @@ $indexUrl = ($baseUri === '' ? '' : $baseUri) . '/index.php';
 $alreadyInstalled = mc_is_installed();
 $isFirstInstall   = !$alreadyInstalled;
 
-/* If already installed, require authenticated admin session (set after BasicAuth on index.php). */
+/* If already installed, require authenticated admin session (set after BasicAuth). */
 if ($alreadyInstalled) {
-    if (!empty($_SERVER['REMOTE_USER'])) {
-        $_SESSION['mc_admin_ok'] = true;
-    }
+    mc_mark_admin_session_from_basic_auth();
 
     mc_require_admin_session_or_pretty_403(
         'Installer is available only to authenticated admins.',

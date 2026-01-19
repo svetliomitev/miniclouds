@@ -39,10 +39,6 @@ if (!is_dir($CACHE_DIR))  @mkdir($CACHE_DIR, 0755, true);
 
 csrf_init();
 
-if (!isset($_SESSION['mc_admin_ok'])) {
-    $_SESSION['mc_admin_ok'] = true;
-}
-
 $MAX_FILE_BYTES = php_upload_file_limit_bytes();
 $MAX_POST_BYTES = php_post_limit_bytes();
 $MAX_FILE_UPLOADS = php_max_file_uploads();
@@ -615,7 +611,11 @@ $totalHuman = format_bytes((int)$totalBytes);
                     data-confirm="Rebuild file index and shared index now?">
                 <input type="hidden" name="csrf" value="<?=h($_SESSION['csrf'])?>">
                 <input type="hidden" name="action" value="rebuild_index">
-                <button class="btn btn-outline-info w-100" type="submit" id="rebuildIndexBtn">
+                <button class="btn btn-outline-info w-100"
+                        type="submit"
+                        id="rebuildIndexBtn"
+                        title="Rebuilds file and shared indexes. Use after manual changes on disk (FTP/SSH)."
+                        aria-label="Rebuilds file and shared indexes. Use after manual changes on disk (FTP/SSH).">
                     Rebuild Index
                 </button>
                 </form>
@@ -626,8 +626,12 @@ $totalHuman = format_bytes((int)$totalBytes);
                     data-confirm="<?=h('Reconfigure ' . $APP_NAME . '? This will open the installer to update settings (password can be left blank to keep current).')?>">
                 <input type="hidden" name="csrf" value="<?=h($_SESSION['csrf'])?>">
                 <input type="hidden" name="action" value="reinstall">
-                <button class="btn btn-outline-warning w-100" type="submit" id="reinstallBtn">
-                  Reconfigure App
+                <button class="btn btn-outline-warning w-100"
+                        type="submit"
+                        id="reinstallBtn"
+                        title="Opens the installer to update settings. Uploads are preserved."
+                        aria-label="Opens the installer to update settings. Uploads are preserved.">
+                    Reconfigure App
                 </button>
               </form>
             </div>
@@ -639,6 +643,8 @@ $totalHuman = format_bytes((int)$totalBytes);
                 <button class="btn btn-outline-danger w-100"
                         id="deleteAllBtn"
                         type="submit"
+                        title="Deletes ALL uploaded files and clears all share links."
+                        aria-label="Deletes ALL uploaded files and clears all share links."
                         <?= ($totalFiles === 0) ? 'disabled aria-disabled="true"' : '' ?>>
                     Delete Files
                 </button>
