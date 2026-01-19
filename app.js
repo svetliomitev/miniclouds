@@ -164,11 +164,13 @@
     el.style.display = 'none';
     el.setAttribute('aria-hidden', 'true');
   }
+
   function forceShow(el){
     if (!el) return;
     el.style.display = '';
     el.removeAttribute('aria-hidden');
   }
+
   function setEnabled(el, enabled){
     if (!el) return;
     el.disabled = !enabled;

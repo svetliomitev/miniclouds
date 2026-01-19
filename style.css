@@ -511,3 +511,9 @@ mark{ padding: .05em .2em; border-radius: .25rem; }
 /* Ensure Bootstrap modals are above our fixed UI layers (toasts, back-to-top, etc.) */
 .modal{ z-index: 3000; }
 .modal-backdrop{ z-index: 2990; }
+
+/** expand admin action buttons chevron **/
+button[aria-expanded="true"] .bi-chevron-down {
+  transform: rotate(180deg);
+  transition: transform .15s ease;
+}

@@ -605,52 +605,66 @@ $totalHuman = format_bytes((int)$totalBytes);
 
           <hr class="my-4">
 
-          <div class="row g-2">
-            <div class="col-12 col-md-4">
+          <button class="btn btn-outline-warning w-100 d-md-none mb-2"
+                  type="button"
+                  data-bs-toggle="collapse"
+                  data-bs-target="#mcAdminActions"
+                  aria-expanded="false"
+                  aria-controls="mcAdminActions">
+            <span class="d-flex justify-content-between align-items-center">
+              <span>Admin Actions</span>
+              <i class="bi bi-chevron-down" aria-hidden="true"></i>
+            </span>
+          </button>
+
+          <div id="mcAdminActions" class="collapse d-md-block">
+            <div class="row g-2">
+              <div class="col-12 col-md-4">
                 <form method="post" class="js-ajax" id="rebuildIndexForm"
-                    data-confirm="Rebuild file index and shared index now?">
-                <input type="hidden" name="csrf" value="<?=h($_SESSION['csrf'])?>">
-                <input type="hidden" name="action" value="rebuild_index">
-                <button class="btn btn-outline-info w-100"
-                        type="submit"
-                        id="rebuildIndexBtn"
-                        title="Rebuilds file and shared indexes. Use after manual changes on disk (FTP/SSH)."
-                        aria-label="Rebuilds file and shared indexes. Use after manual changes on disk (FTP/SSH).">
+                      data-confirm="Rebuild file index and shared index now?">
+                  <input type="hidden" name="csrf" value="<?=h($_SESSION['csrf'])?>">
+                  <input type="hidden" name="action" value="rebuild_index">
+                  <button class="btn btn-outline-info w-100"
+                          type="submit"
+                          id="rebuildIndexBtn"
+                          title="Rebuilds file and shared indexes. Use after manual changes on disk (FTP/SSH)."
+                          aria-label="Rebuilds file and shared indexes. Use after manual changes on disk (FTP/SSH).">
                     Rebuild Index
-                </button>
+                  </button>
                 </form>
-            </div>
+              </div>
 
-            <div class="col-12 col-md-4">
-              <form method="post" class="js-ajax" id="reinstallForm"
-                    data-confirm="<?=h('Reconfigure ' . $APP_NAME . '? This will open the installer to update settings (password can be left blank to keep current).')?>">
-                <input type="hidden" name="csrf" value="<?=h($_SESSION['csrf'])?>">
-                <input type="hidden" name="action" value="reinstall">
-                <button class="btn btn-outline-warning w-100"
-                        type="submit"
-                        id="reinstallBtn"
-                        title="Opens the installer to update settings. Uploads are preserved."
-                        aria-label="Opens the installer to update settings. Uploads are preserved.">
+              <div class="col-12 col-md-4">
+                <form method="post" class="js-ajax" id="reinstallForm"
+                      data-confirm="<?=h('Reconfigure ' . $APP_NAME . '? This will open the installer to update settings (password can be left blank to keep current).')?>">
+                  <input type="hidden" name="csrf" value="<?=h($_SESSION['csrf'])?>">
+                  <input type="hidden" name="action" value="reinstall">
+                  <button class="btn btn-outline-warning w-100"
+                          type="submit"
+                          id="reinstallBtn"
+                          title="Opens the installer to update settings. Uploads are preserved."
+                          aria-label="Opens the installer to update settings. Uploads are preserved.">
                     Reconfigure App
-                </button>
-              </form>
-            </div>
-
-            <div class="col-12 col-md-4">
-                <form method="post" class="js-ajax" id="deleteAllForm" data-confirm="Delete ALL files?">
-                <input type="hidden" name="csrf" value="<?=h($_SESSION['csrf'])?>">
-                <input type="hidden" name="action" value="delete_all">
-                <button class="btn btn-outline-danger w-100"
-                        id="deleteAllBtn"
-                        type="submit"
-                        title="Deletes ALL uploaded files and clears all share links."
-                        aria-label="Deletes ALL uploaded files and clears all share links."
-                        <?= ($totalFiles === 0) ? 'disabled aria-disabled="true"' : '' ?>>
-                    Delete Files
-                </button>
+                  </button>
                 </form>
+              </div>
+
+              <div class="col-12 col-md-4">
+                <form method="post" class="js-ajax" id="deleteAllForm" data-confirm="Delete ALL files?">
+                  <input type="hidden" name="csrf" value="<?=h($_SESSION['csrf'])?>">
+                  <input type="hidden" name="action" value="delete_all">
+                  <button class="btn btn-outline-danger w-100"
+                          id="deleteAllBtn"
+                          type="submit"
+                          title="Deletes ALL uploaded files and clears all share links."
+                          aria-label="Deletes ALL uploaded files and clears all share links."
+                          <?= ($totalFiles === 0) ? 'disabled aria-disabled="true"' : '' ?>>
+                    Delete Files
+                  </button>
+                </form>
+              </div>
             </div>
-        </div>
+          </div>
 
         </div>
       </div>
