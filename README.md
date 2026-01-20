@@ -29,11 +29,14 @@
 - **Explicit index consistency checking (manual)**
 - **Index drift detection for external filesystem changes**
 - Manual index rebuild with progress feedback
+- File-count–based upload quota (administrator-defined)
+- Strict quota enforcement on both UI and server level
 - Atomic file and index operations where possible
 - Installer with environment checks and configuration
 - CSRF protection and hardened sessions
 - Simple, modern UI built on Bootstrap
 - Designed for single-instance, private deployments
+- Built-in Info panel showing live totals and configured upload quota
 
 ---
 
@@ -48,6 +51,7 @@ Core principles:
 - **No automatic self-healing**
 - **Administrator-controlled consistency**
 - **Cheap drift detection, never automatic repair**
+- **Deterministic resource limits (file-count quotas)**
 
 ### Index Management Model
 
@@ -65,6 +69,29 @@ This design guarantees:
 - No unexpected heavy operations
 - No silent mutations
 - Full operator awareness and control
+
+---
+
+### Upload Quota Model
+
+MiniCloudS enforces upload limits using a **maximum number of files** quota.
+
+Design choices:
+- Quotas are **count-based**, not size-based
+- Enforcement is **deterministic and cheap**
+- No background scanning or periodic reconciliation
+- No silent cleanup or auto-deletion
+
+Behavior:
+- Uploads are blocked when the quota is reached
+- Partial uploads are rejected atomically
+- External filesystem changes do **not** bypass quotas
+- Quotas are enforced consistently:
+  - client-side (upload selection)
+  - server-side (request validation)
+
+Quota configuration is defined during installation and stored in
+`install_state.json`.
 
 ---
 
@@ -89,6 +116,9 @@ This design guarantees:
    - `.htaccess`
    - `.htpasswd` (HTTP Basic Authentication)
    - `install_state.json`
+6. The installer also defines:
+- files-per-page UI behavior
+- upload quota (maximum number of files)
 
 After installation, access is protected via classic browser authentication using the credentials defined in the installer.
 
@@ -173,6 +203,10 @@ You are responsible for:
 - HTTPS configuration
 - Server-level access control
 - Backup strategy
+
+```text
+Note: Upload quotas are independent from PHP upload limits. Both must allow an upload for it to succeed.
+```
 
 ---
 
