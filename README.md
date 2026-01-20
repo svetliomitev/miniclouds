@@ -204,10 +204,9 @@ You are responsible for:
 - Server-level access control
 - Backup strategy
 
-```text
-Note: Upload quotas are independent from PHP upload limits.
-Both must allow an upload for it to succeed.
-```
+> 💡 **Note**  
+> Upload quotas are independent from PHP upload limits.
+> Both must allow an upload for it to succeed.
 
 ---
 
