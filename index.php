@@ -48,6 +48,43 @@ $MAX_POST_HUMAN = format_bytes($MAX_POST_BYTES);
 $isAjax = mc_is_ajax();
 
 /* =========================
+   INSTANCE / CONFIG
+   - Read once, used for POST + HTML
+   ========================= */
+$state = mc_read_state();
+
+$APP_NAME = (string)($state['app_name'] ?? 'MiniCloudS');
+$APP_NAME = trim((string)preg_replace('~\s+~', ' ', $APP_NAME));
+if ($APP_NAME === '' || !preg_match('~^[A-Za-z](?:[A-Za-z ]{0,62}[A-Za-z])?$~', $APP_NAME)) {
+    $APP_NAME = 'MiniCloudS';
+}
+
+$APP_VERSION = (string)($state['version'] ?? 'unknown');
+
+$INSTANCE_ID = (string)($state['instance_id'] ?? '');
+$INSTANCE_ID = (preg_match('~^[a-f0-9]{16,64}$~i', $INSTANCE_ID) ? strtolower($INSTANCE_ID) : '');
+
+$ALLOW_IPS = (!empty($state['allow_ips']) && is_array($state['allow_ips'])) ? $state['allow_ips'] : [];
+$tmp = [];
+foreach ($ALLOW_IPS as $ip) {
+    $ip = trim((string)$ip);
+    if ($ip !== '') $tmp[] = $ip;
+}
+$ALLOWED_IPS = $tmp ? implode(', ', $tmp) : 'Any';
+
+$INSTALLED_AT_RAW = (string)($state['installed_at'] ?? '');
+$INSTALLED_AT_TS  = ($INSTALLED_AT_RAW !== '' ? strtotime($INSTALLED_AT_RAW) : false);
+$INSTALLED_AT_HUMAN = ($INSTALLED_AT_TS !== false) ? date('Y-m-d H:i', (int)$INSTALLED_AT_TS) : '';
+
+$PAGE_SIZE = (int)($state['page_size'] ?? 20);
+if ($PAGE_SIZE < 20) $PAGE_SIZE = 20;
+if ($PAGE_SIZE > 200) $PAGE_SIZE = 200;
+
+$QUOTA_FILES = (int)($state['quota_files'] ?? 0);
+if ($QUOTA_FILES < 0) $QUOTA_FILES = 0;
+if ($QUOTA_FILES > 25000) $QUOTA_FILES = 25000;
+
+/* =========================
    INDEX LOAD (NO SELF-HEAL)
    - Only read existing caches
    - Detect drift vs baseline uploads_fingerprint.json
@@ -62,28 +99,6 @@ $sharedIdx = shared_index_load($CACHE_DIR);
 $sharedSet = is_array($sharedIdx['set'] ?? null) ? $sharedIdx['set'] : [];
 $sharedComplete = (bool)($sharedIdx['complete'] ?? false);
 
-/* Drift detection: uploads vs baseline fingerprint
-   Do this ONLY on GET (first paint / stats / list). POSTs already know what they changed,
-   and will refresh the baseline via $uploadsChanged.
-*/
-$indexDriftKnown = false;
-$indexDrift = false;
-
-if ($_SERVER['REQUEST_METHOD'] === 'GET') {
-    $ajax = (string)($_GET['ajax'] ?? '');
-    $doDriftCheck = ($ajax === '' || $ajax === 'stats'); // NOT for list
-    if ($doDriftCheck) {
-        $drift = mc_uploads_drift_detect($CACHE_DIR, $UPLOAD_DIR);
-        $indexDriftKnown = (bool)($drift['known'] ?? false);
-        $indexDrift = (bool)($drift['drift'] ?? false);
-    }
-}
-
-/* Missing file index is also treated as “needs rebuild” (but not “drift”) */
-$fileIndexPath = $CACHE_DIR . '/file_index.json';
-$fileIndexMissing = !is_file($fileIndexPath);
-$indexNeedsRebuild = ($fileIndexMissing || ($indexDriftKnown && $indexDrift));
-
 // If disk has no byname records, shared index is complete+empty.
 // This fixes the "complete stays false forever" case on fresh/empty installs.
 if (!$sharedComplete) {
@@ -95,25 +110,35 @@ if (!$sharedComplete) {
     }
 }
 
+$flags = mc_index_flags($CACHE_DIR, $UPLOAD_DIR);
+$fileIndexMissing  = $flags['missing'];
+$indexDriftKnown   = $flags['known'];
+$indexNeedsRebuild = $flags['must'];
+
 /* JSON stats endpoint */
 if ($_SERVER['REQUEST_METHOD'] === 'GET' && (string)($_GET['ajax'] ?? '') === 'stats') {
     header('Content-Type: application/json; charset=utf-8');
     header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
 
-    $totalBytes = 0;
-    foreach ($fileIndex as $it) $totalBytes += (int)($it['size'] ?? 0);
+    $flagsS = mc_index_flags($CACHE_DIR, $UPLOAD_DIR);
+
+    // Always load fresh index for stats (reflects disk/cache after other requests)
+    $idxNow = file_index_load($CACHE_DIR);
+
+    $totalBytes = mc_index_total_bytes($idxNow);
 
     echo json_encode([
-    'ok' => true,
+        'ok' => true,
 
-    // NEW: drift/missing index detection (UI will block actions)
-    'index_changed' => ($indexNeedsRebuild ? 1 : 0),
-    'index_changed_known' => ($indexDriftKnown ? 1 : 0),
-    'index_missing' => ($fileIndexMissing ? 1 : 0),
+        // drift/missing index detection (UI will block actions)
+        'index_changed' => ($flagsS['must'] ? 1 : 0),
+        'index_changed_known' => ($flagsS['known'] ? 1 : 0),
+        'index_missing' => ($flagsS['missing'] ? 1 : 0),
+        'index_forced' => 0,
 
-    'total_files' => count($fileIndex),
-    'total_bytes' => $totalBytes,
-    'total_human' => format_bytes((int)$totalBytes),
+        'total_files' => count($idxNow),
+        'total_bytes' => $totalBytes,
+        'total_human' => format_bytes($totalBytes),
     ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
 
     exit;
@@ -128,17 +153,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && (string)($_GET['ajax'] ?? '') === 'l
     $from = parse_ymd((string)($_GET['from'] ?? ''), false);
     $to   = parse_ymd((string)($_GET['to'] ?? ''), true);
 
-    $flags = (string)($_GET['flags'] ?? 'all');
-    if ($flags !== 'all' && $flags !== 'shared') $flags = 'all';
+    $qFlags = (string)($_GET['flags'] ?? 'all');
+    if ($qFlags !== 'all' && $qFlags !== 'shared') $qFlags = 'all';
 
     $offset = (int)($_GET['offset'] ?? 0);
     if ($offset < 0) $offset = 0;
 
-    $limit = (int)($_GET['limit'] ?? 20);
-    if ($limit < 1) $limit = 20;
+    $limit = (int)($_GET['limit'] ?? $PAGE_SIZE);
+    if ($limit < 1) $limit = $PAGE_SIZE;
     if ($limit > 200) $limit = 200;
 
-    if ($flags === 'shared' && $sharedComplete && is_array($sharedSet) && count($sharedSet) === 0) {
+    if ($qFlags === 'shared' && $sharedComplete && is_array($sharedSet) && count($sharedSet) === 0) {
         echo json_encode([
             'ok' => true,
             'files' => [],
@@ -161,7 +186,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && (string)($_GET['ajax'] ?? '') === 'l
         $q,
         $from,
         $to,
-        $flags,
+        $qFlags,
         $offset,
         $limit,
         $BY_DIR,
@@ -178,7 +203,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && (string)($_GET['ajax'] ?? '') === 'l
         'offset' => $offset,
         'limit' => $limit,
         'has_more' => $hasMore,
-        'flags_shared_index' => ($flags === 'shared' && $useSharedSet !== null),
+        'flags_shared_index' => ($qFlags === 'shared' && $useSharedSet !== null),
     ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
     exit;
 }
@@ -190,6 +215,43 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && (string)($_GET['ajax'] ?? '') === 'l
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     csrf_check();
     $action = (string)($_POST['action'] ?? '');
+
+    // HARD GUARD: never mutate when index/baseline is unsafe.
+    $guardFlags = mc_index_flags($CACHE_DIR, $UPLOAD_DIR);
+
+    if ($guardFlags['must'] && $action !== 'rebuild_index') {
+        $ok = [];
+        $err = ['Index changed or baseline missing. Please use Rebuild Index first.'];
+        $redirectTo = '';
+
+        $totalBytes = mc_index_total_bytes($fileIndex);
+
+        if ($isAjax) {
+            header('Content-Type: application/json; charset=utf-8');
+            header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+            echo json_encode([
+                'ok' => $ok,
+                'err' => $err,
+                'redirect' => $redirectTo,
+                'stats' => [
+                  // IMPORTANT: use these exact keys (match app.js applyStats)
+                  'index_changed' => 1,
+                  'index_changed_known' => ($guardFlags['known'] ? 1 : 0),
+                  'index_missing' => ($guardFlags['missing'] ? 1 : 0),
+                  'index_forced' => 1,
+
+                  'total_files' => count($fileIndex),
+                  'total_bytes' => $totalBytes,
+                  'total_human' => format_bytes($totalBytes),
+                ],
+            ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+            exit;
+        }
+
+        foreach ($err as $m) flash_add('err', $m);
+        header('Location: index.php');
+        exit;
+    }
 
     $ok = [];
     $err = [];
@@ -206,9 +268,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $files = $_FILES['files'];
             $count = is_array($files['name']) ? count($files['name']) : 0;
 
+            // Quota enforcement: max number of files in uploads (0 => unlimited)
+            if ($QUOTA_FILES > 0) {
+                $currentCount = count($fileIndex);
+
+                if ($currentCount >= $QUOTA_FILES) {
+                    $err[] = 'Quota reached (' . $QUOTA_FILES . ' files). Delete files to upload new ones.';
+                } elseif ($count > ($QUOTA_FILES - $currentCount)) {
+                    $left = $QUOTA_FILES - $currentCount;
+                    $err[] = 'Quota allows ' . $left . ' more file(s). You selected ' . $count . '.';
+                }
+            }
+
             if ($MAX_FILE_UPLOADS > 0 && $count > $MAX_FILE_UPLOADS) {
                 $err[] = 'Too many files selected (' . $count . '). Max allowed is ' . $MAX_FILE_UPLOADS . '.';
-            } else {
+            }
+
+            // If any validation error so far, do not proceed into total/loop
+            if (!$err) {
                 $total = 0;
                 for ($i = 0; $i < $count; $i++) {
                     $total += (int)($files['size'][$i] ?? 0);
@@ -251,8 +328,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                         if (!is_uploaded_file($tmp)) { $err[] = $orig . ': invalid upload source.'; continue; }
                         if (!@move_uploaded_file($tmp, $target)) { $err[] = $orig . ': failed to save.'; continue; }
-
-                        $uploadsChanged = true;
 
                         @chmod($target, 0644);
 
@@ -309,14 +384,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
     elseif ($action === 'delete_all') {
-        if (!$fileIndex) {
+        $diskFiles = mc_uploads_list_files($UPLOAD_DIR);
+        if (!$diskFiles) {
             $err[] = 'No files to delete.';
         } else {
             $deleted = 0; $failed = 0;
 
-            foreach ($fileIndex as $f) {
-                $fn = (string)($f['name'] ?? '');
-                if ($fn === '') continue;
+            foreach ($diskFiles as $fn) {
                 $p = $UPLOAD_DIR . '/' . $fn;
                 if (@unlink($p)) $deleted++;
                 else $failed++;
@@ -324,10 +398,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             $ok[] = 'Deleted ' . $deleted . ' file(s).';
             if ($failed) $err[] = 'Failed to delete ' . $failed . ' file(s).';
+            if ($failed) {
+                $err[] = 'Some files could not be removed from disk. Index will require rebuild after you fix permissions.';
+            }
 
+            // If we failed to delete anything, keep index/baseline conservative:
+            // - still clear index UI-side (so user sees intent), BUT force rebuild via drift
+            //   by NOT updating baseline later.
             $fileIndex = [];
             $indexChanged = true;
-            $uploadsChanged = true;
+
+            // Only refresh baseline when disk delete succeeded fully.
+            if ($failed === 0) {
+                $uploadsChanged = true;
+            } else {
+                $uploadsChanged = false;
+            }
 
             [$txtDel, $jsonDel, $lFail] = delete_all_links($LINK_DIR, $BY_DIR);
 
@@ -433,19 +519,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         shared_index_save($CACHE_DIR, is_array($sharedSet) ? $sharedSet : [], $sharedComplete);
     }
 
-    $totalBytes = 0;
-    foreach ($fileIndex as $it) $totalBytes += (int)($it['size'] ?? 0);
+    $afterFlags = mc_index_flags($CACHE_DIR, $UPLOAD_DIR);
+    $totalBytes = mc_index_total_bytes($fileIndex);
 
     if ($isAjax) {
         header('Content-Type: application/json; charset=utf-8');
+        header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
         echo json_encode([
             'ok' => $ok,
             'err' => $err,
             'redirect' => $redirectTo,
             'stats' => [
-                'total_files' => count($fileIndex),
-                'total_bytes' => $totalBytes,
-                'total_human' => format_bytes((int)$totalBytes),
+              'index_changed' => ($afterFlags['must'] ? 1 : 0),
+              'index_changed_known' => ($afterFlags['known'] ? 1 : 0),
+              'index_missing' => ($afterFlags['missing'] ? 1 : 0),
+
+              'total_files' => count($fileIndex),
+              'total_bytes' => $totalBytes,
+              'total_human' => format_bytes($totalBytes),
             ],
         ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
         exit;
@@ -461,42 +552,6 @@ $flash = flash_pop();
 if (session_status() === PHP_SESSION_ACTIVE) {
     session_write_close();
 }
-
-/* =========================
-   INSTANCE / CONFIG
-   ========================= */
-
-$state = mc_read_state();
-
-$APP_NAME = (string)($state['app_name'] ?? 'MiniCloudS');
-$APP_NAME = trim((string)preg_replace('~\s+~', ' ', $APP_NAME));
-if ($APP_NAME === '' || !preg_match('~^[A-Za-z](?:[A-Za-z ]{0,62}[A-Za-z])?$~', $APP_NAME)) {
-    $APP_NAME = 'MiniCloudS';
-}
-
-$APP_VERSION = (string)($state['version'] ?? 'unknown');
-
-$INSTANCE_ID = (string)($state['instance_id'] ?? '');
-$INSTANCE_ID = (preg_match('~^[a-f0-9]{16,64}$~i', $INSTANCE_ID) ? strtolower($INSTANCE_ID) : '');
-
-$ALLOW_IPS = $state['allow_ips'];
-
-$tmp = [];
-foreach ($ALLOW_IPS as $ip) {
-    $ip = trim((string)$ip);
-    if ($ip !== '') $tmp[] = $ip;
-}
-$ALLOWED_IPS = $tmp ? implode(', ', $tmp) : 'Any';
-
-$INSTALLED_AT_RAW = (string)($state['installed_at'] ?? '');
-$INSTALLED_AT_TS  = ($INSTALLED_AT_RAW !== '' ? strtotime($INSTALLED_AT_RAW) : false);
-$INSTALLED_AT_HUMAN = ($INSTALLED_AT_TS !== false)
-    ? date('Y-m-d H:i', (int)$INSTALLED_AT_TS) // keep this, or change format if you want
-    : '';
-
-$PAGE_SIZE = (int)($state['page_size'] ?? 20);
-if ($PAGE_SIZE < 20) $PAGE_SIZE = 20;
-if ($PAGE_SIZE > 200) $PAGE_SIZE = 200;
 
 /* =========================
    FIRST PAINT
@@ -520,11 +575,11 @@ $useSharedSetForPaint = ($sharedComplete && is_array($sharedSet)) ? $sharedSet :
 );
 
 $shownFiles = count($filesPage);
-$totalFiles = $totalMatches;
+$totalFiles = $totalMatches;         // matches current query/filter
+$totalFilesAll = count($fileIndex);  // ALL files in index (filter-independent)
 
-$totalBytes = 0;
-foreach ($fileIndex as $it) $totalBytes += (int)($it['size'] ?? 0);
-$totalHuman = format_bytes((int)$totalBytes);
+$totalBytes = mc_index_total_bytes($fileIndex);
+$totalHuman = format_bytes($totalBytes);
 
 ?>
 <!doctype html>
@@ -658,7 +713,7 @@ $totalHuman = format_bytes((int)$totalBytes);
                           type="submit"
                           title="Deletes ALL uploaded files and clears all share links."
                           aria-label="Deletes ALL uploaded files and clears all share links."
-                          <?= ($totalFiles === 0) ? 'disabled aria-disabled="true"' : '' ?>>
+                          <?= ($totalFilesAll === 0) ? 'disabled aria-disabled="true"' : '' ?>>
                     Delete Files
                   </button>
                 </form>
@@ -934,8 +989,14 @@ $totalHuman = format_bytes((int)$totalBytes);
             <li>
               Currently uploaded:
               <span class="mc-code-primary">
-                <span id="mcInfoFilesCount"><?= h((string)$totalFiles) ?></span> files,
+                <span id="mcInfoFilesCount"><?= h((string)$totalFilesAll) ?></span> files,
                 <span id="mcInfoTotalSize"><?= h($totalHuman) ?></span>
+              </span>
+            </li>
+            <li>
+              Current upload quota:
+              <span class="mc-code-primary">
+                <?= ($QUOTA_FILES > 0 ? h((string)$QUOTA_FILES) . ' files' : 'Unlimited') ?>
               </span>
             </li>
             <li>Max size per file: <span class="mc-code-primary"><?= h((string)$MAX_FILE_HUMAN) ?></span></li>
@@ -1026,17 +1087,18 @@ $totalHuman = format_bytes((int)$totalBytes);
 <script nonce="<?=h($cspNonce)?>" type="application/json" id="mc-boot"><?=
   json_encode([
     'pageSize'       => $PAGE_SIZE,
+    'quotaFiles'     => $QUOTA_FILES,
     'csrf'           => $_SESSION['csrf'],
-    'totalFiles'     => $totalFiles,
+    'totalFiles'     => $totalFilesAll, // IMPORTANT: all uploads, not filtered matches
     'filesPage'      => $filesPage,
     'flashOk'        => $flash['ok'],
     'flashErr'       => $flash['err'],
     'maxPostBytes'   => $MAX_POST_BYTES,
     'maxFileBytes'   => $MAX_FILE_BYTES,
     'maxFileUploads' => $MAX_FILE_UPLOADS,
-    'indexChanged' => ($indexNeedsRebuild ? 1 : 0),
-    'indexMissing' => ($fileIndexMissing ? 1 : 0),
-    'indexKnown'   => ($indexDriftKnown ? 1 : 0),
+    'index_changed'       => ($indexNeedsRebuild ? 1 : 0),
+    'index_missing'       => ($fileIndexMissing ? 1 : 0),
+    'index_changed_known' => ($indexDriftKnown ? 1 : 0),
   ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
 ?></script>
 

@@ -21,6 +21,7 @@
   })();
 
   var PAGE_SIZE = Number(BOOT.pageSize || 20);
+  var QUOTA_FILES = Number(BOOT.quotaFiles || 0); // 0 => unlimited (legacy / missing)
   var csrfToken = String(BOOT.csrf || '');
 
   /* =========================
@@ -161,13 +162,19 @@
     if (!el) return;
     el.classList.remove('show');
     el.classList.remove('showing');
-    el.style.display = 'none';
+
+    // CSP-safe: use a class instead of inline style
+    el.classList.add('d-none');
+
     el.setAttribute('aria-hidden', 'true');
   }
 
   function forceShow(el){
     if (!el) return;
-    el.style.display = '';
+
+    // CSP-safe: remove class instead of inline style
+    el.classList.remove('d-none');
+
     el.removeAttribute('aria-hidden');
   }
 
@@ -205,7 +212,7 @@
       if (!iframe) {
         iframe = document.createElement('iframe');
         iframe.id = 'mcDownloadFrame';
-        iframe.style.display = 'none';
+        iframe.className = 'd-none';
         iframe.setAttribute('aria-hidden', 'true');
         document.body.appendChild(iframe);
       }
@@ -267,15 +274,12 @@
     return out;
   }
 
-  function syncInfoModalFromUI(){
+  function syncInfoModalFromTotals(){
     var infoFiles = document.getElementById('mcInfoFilesCount');
     var infoSize  = document.getElementById('mcInfoTotalSize');
 
-    var filesNow = DOM.counts && DOM.counts.total1 ? DOM.counts.total1.textContent : '';
-    var sizeNow  = DOM.footerTotal ? DOM.footerTotal.textContent : '';
-
-    if (infoFiles && filesNow) infoFiles.textContent = String(filesNow).trim();
-    if (infoSize && sizeNow) infoSize.textContent = String(sizeNow).trim();
+    if (infoFiles) infoFiles.textContent = String(Number(Totals.files || 0));
+    if (infoSize)  infoSize.textContent  = String(Totals.human || '');
   }
 
   /* =========================
@@ -313,8 +317,7 @@
     }
     if (el) {
       el.classList.remove('show');
-      el.style.display = 'none';
-      el.setAttribute('aria-hidden', 'true');
+      forceHide(el);
       el.removeAttribute('aria-modal');
       el.removeAttribute('role');
     }
@@ -687,6 +690,12 @@
     files: bootFiles
   };
 
+  // Always totals for ALL uploaded files (never filtered)
+  var Totals = {
+    files: Number(BOOT.totalFiles || 0),
+    human: (DOM.footerTotal ? String(DOM.footerTotal.textContent || '').trim() : formatBytes(0))
+  };
+
   var __mcUrlInflight = Object.create(null);
   var __mcNavigating = false;
 
@@ -718,14 +727,18 @@
   function applyStats(stats){
     if (!stats) return;
 
-    var changed = (Number(stats.index_changed || 0) === 1);
-    var known   = (Number(stats.index_changed_known || 0) === 1);
+    // Server keys: index_changed, index_changed_known, index_missing
+    // Guard may also send: index_forced=1 (explicit hard-lock message)
+    var must = (Number(stats.index_changed || stats.index_must_rebuild || 0) === 1);
+    var forced = (Number(stats.index_forced || 0) === 1);
 
-    if (changed && known) {
+    // If server explicitly forces rebuild, treat as hard lock + known drift
+    if (forced) { must = true; known = true; }
+
+    if (must) {
       HardLock.show();
       UI.setBusy(UI.getBusy()); // re-apply policy
     } else {
-      // server is clean => unlock if we were locked
       if (HardLock.isHard()) {
         HardLock.clear();
         UI.setBusy(UI.getBusy());
@@ -734,16 +747,19 @@
 
     if (stats.total_human && DOM.footerTotal) DOM.footerTotal.textContent = String(stats.total_human);
 
-    var totalAll = Number(stats.total_files || 0);
-    UI.setDeleteAllHasFiles(totalAll > 0);
+    // Update "all uploads" totals state (filter-independent)
+    if (stats.total_human) Totals.human = String(stats.total_human);
+    Totals.files = Number(stats.total_files || 0);
 
-    var shownNow = (DOM.counts && DOM.counts.shown1) ? Number(DOM.counts.shown1.textContent || 0) : 0;
-    updateCounts(shownNow, totalAll);
+    // Delete All availability should follow ALL uploads
+    UI.setDeleteAllHasFiles(Totals.files > 0);
 
     if (DOM.buttons.deleteAll) {
-      if (totalAll <= 0) DOM.buttons.deleteAll.setAttribute('data-mc-empty','1');
+      if (Totals.files <= 0) DOM.buttons.deleteAll.setAttribute('data-mc-empty','1');
       else DOM.buttons.deleteAll.removeAttribute('data-mc-empty');
     }
+
+    syncInfoModalFromTotals();
   }
 
   function refreshStats(){
@@ -1330,7 +1346,7 @@
               RowBusy.set(fileName, false);
             }
 
-            refreshStats();
+            // no-op: stats already applied/refreshed in success path
           });
       }
 
@@ -1383,6 +1399,13 @@
     var maxPerFile = Number(BOOT.maxFileBytes || 0);
     var maxFiles = Number(BOOT.maxFileUploads || 0);
 
+    function quotaLeftNow(){
+      if (!(QUOTA_FILES > 0)) return Infinity;
+      var used = Number(Totals.files || 0);
+      var left = QUOTA_FILES - used;
+      return (left < 0) ? 0 : left;
+    }
+
     function setProgress(pct){
       pct = Math.max(0, Math.min(100, pct));
       wrap.classList.remove('d-none');
@@ -1411,6 +1434,18 @@
       if (!input.files || input.files.length === 0) {
         Toast.show('warning', 'Upload', 'No files selected.');
         return;
+      }
+
+      if (QUOTA_FILES > 0) {
+        var left = quotaLeftNow();
+        if (left <= 0) {
+          Toast.show('warning', 'Upload', 'Quota reached (' + QUOTA_FILES + ' files). Delete files to upload new ones.');
+          return;
+        }
+        if (input.files.length > left) {
+          Toast.show('warning', 'Upload', 'Quota allows ' + left + ' more file(s). You selected ' + input.files.length + '.');
+          return;
+        }
       }
 
       if (maxFiles > 0 && input.files.length > maxFiles) {
@@ -1952,14 +1987,25 @@
   function initInfoModal(){
     if (!DOM.infoModal || !window.bootstrap) return;
     L.on(DOM.infoModal, 'show.bs.modal', function(){
-      syncInfoModalFromUI();
+      syncInfoModalFromTotals();
     });
   }
 
   function initInitialPaint(){
-    if (Number(BOOT.indexChanged || 0) === 1) HardLock.show();
+    // First-paint stats application (same path as ajax=stats)
+    applyStats({
+      index_changed: Number(BOOT.index_changed || 0),
+      index_changed_known: Number(BOOT.index_changed_known || 0),
+      index_missing: Number(BOOT.index_missing || 0),
+      total_files: Number(BOOT.totalFiles || 0),
+      total_human: (
+        DOM.footerTotal
+          ? String(DOM.footerTotal.textContent || '').trim()
+          : ''
+      )
+    });
 
-    UI.setDeleteAllHasFiles(pageState.total > 0);
+    UI.setDeleteAllHasFiles(Totals.files > 0);
     UI.setBusy(false);
 
     updateCounts(pageState.files.length, pageState.total);

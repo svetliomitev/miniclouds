@@ -283,6 +283,24 @@ function mc_read_state(): array {
         $j['allow_ips'] = [];
     }
 
+    /* ---------------------------------
+       Normalize page_size + quota_files
+       - always provide safe defaults
+       --------------------------------- */
+
+    // page_size default 20, clamp 20..200
+
+    $ps = (int)($j['page_size'] ?? 20);
+    if ($ps < 20) $ps = 20;
+    if ($ps > 200) $ps = 200;
+    $j['page_size'] = $ps;
+
+    // quota_files default 0 (unlimited), clamp 0..25000
+    $qf = (int)($j['quota_files'] ?? 0);
+    if ($qf < 0) $qf = 0;
+    if ($qf > 25000) $qf = 25000;
+    $j['quota_files'] = $qf;
+
     return $j;
 }
 
@@ -309,6 +327,7 @@ function mc_write_install_state(
     string $version = '',
     string $appName = '',
     int $pageSize = 0,
+    int $quotaFiles = 0,
     string $adminUser = '',
     array $allowIps = []
 ): void {
@@ -340,7 +359,7 @@ function mc_write_install_state(
         $v = trim($v);
         if ($v !== '') $norm[] = $v;
     }
-    $payload['allow_ips'] = array_values($norm);
+    $payload['allow_ips'] = array_values(array_unique($norm));
 
     if ($version !== '') $payload['version'] = $version;
     if ($appName !== '') $payload['app_name'] = $appName;
@@ -351,7 +370,13 @@ function mc_write_install_state(
         $payload['page_size'] = (int)$pageSize;
     }
 
-    if (!atomic_write_json(mc_state_path(), $payload)) {
+    if ($quotaFiles > 0) {
+        if ($quotaFiles < 1) $quotaFiles = 1;
+        if ($quotaFiles > 25000) $quotaFiles = 25000;
+        $payload['quota_files'] = (int)$quotaFiles;
+    }
+
+    if (!atomic_write_json(mc_state_path(), $payload, true)) {
         throw new RuntimeException('Cannot write install_state.json');
     }
     @chmod(mc_state_path(), 0644);
@@ -503,13 +528,20 @@ function apcu_del(string $key): void {
    ATOMIC WRITE JSON
    ========================= */
 
-function atomic_write_json(string $path, array $data): bool {
+function atomic_write_json(string $path, array $data, bool $pretty = false): bool {
     $dir = dirname($path);
     if (!is_dir($dir)) @mkdir($dir, 0755, true);
 
     $tmp = $path . '.tmp.' . bin2hex(random_bytes(6));
-    $json = json_encode($data, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+
+    $flags = JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE;
+    if ($pretty) $flags |= JSON_PRETTY_PRINT;
+
+    $json = json_encode($data, $flags);
     if (!is_string($json)) return false;
+
+    // Keep a trailing newline for human-edited config files (install_state.json etc.)
+    if ($pretty) $json .= "\n";
 
     $fh = @fopen($tmp, 'wb');
     if (!$fh) return false;
@@ -676,6 +708,33 @@ function file_index_rebuild_from_disk(string $uploadDir): array {
 
     usort($out, 'mc_cmp_file_index_newest_first');
 
+    return $out;
+}
+
+/**
+ * Lists upload directory files (basenames only), ignoring dotfiles.
+ * Returns sorted list for stable behavior.
+ */
+function mc_uploads_list_files(string $uploadDir): array {
+    $out = [];
+    if (!is_dir($uploadDir) || !is_readable($uploadDir)) return $out;
+
+    $it = @scandir($uploadDir);
+    if (!is_array($it)) return $out;
+
+    foreach ($it as $name) {
+        $name = (string)$name;
+        if ($name === '' || $name === '.' || $name === '..') continue;
+        if (isset($name[0]) && $name[0] === '.') continue;
+
+        $path = $uploadDir . '/' . $name;
+        if (!is_file($path)) continue;
+
+        // keep basenames only
+        $out[] = $name;
+    }
+
+    sort($out, SORT_STRING);
     return $out;
 }
 
@@ -1188,6 +1247,68 @@ function mc_uploads_drift_detect(string $cacheDir, string $uploadDir): array {
     }
 
     return ['known' => true, 'drift' => $drift, 'baseline' => $base, 'current' => $cur];
+}
+
+/**
+ * Returns index safety status:
+ * - must: true => block actions and require rebuild
+ * - missing: file_index.json missing
+ * - known: baseline fingerprint exists
+ * - drift: uploads differ from baseline
+ */
+function mc_index_must_rebuild(string $cacheDir, string $uploadDir): array {
+    $fileIndexPath = rtrim($cacheDir, '/\\') . '/file_index.json';
+    $missing = !is_file($fileIndexPath);
+
+    $dr = mc_uploads_drift_detect($cacheDir, $uploadDir);
+    $known = (bool)($dr['known'] ?? false);
+    $drift = (bool)($dr['drift'] ?? false);
+
+    // Treat "unknown baseline" as unsafe (must rebuild)
+    $must = ($missing || !$known || $drift);
+
+    return [
+        'must' => $must,
+        'missing' => $missing,
+        'known' => $known,
+        'drift' => $drift,
+    ];
+}
+
+/**
+ * Returns normalized index/baseline status flags for UI.
+ * All values are strict booleans; also returns the raw idx array.
+ *
+ * @return array{
+ *   missing: bool,
+ *   known: bool,
+ *   must: bool,
+ *   drift: bool,
+ *   raw: array
+ * }
+ */
+function mc_index_flags(string $cacheDir, string $uploadDir): array {
+    $idx = mc_index_must_rebuild($cacheDir, $uploadDir);
+
+    return [
+        'missing' => !empty($idx['missing']),
+        'known'   => !empty($idx['known']),
+        'must'    => !empty($idx['must']),
+        'drift'   => !empty($idx['drift']),
+        'raw'     => is_array($idx) ? $idx : [],
+    ];
+}
+
+/**
+ * Sum total bytes from a file index array.
+ * Expects items like ['size' => int].
+ */
+function mc_index_total_bytes(array $fileIndex): int {
+    $t = 0;
+    foreach ($fileIndex as $it) {
+        $t += (int)($it['size'] ?? 0);
+    }
+    return $t;
 }
 
 /* =========================
