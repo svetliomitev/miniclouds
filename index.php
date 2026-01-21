@@ -681,17 +681,20 @@ $totalHuman = format_bytes($totalBytes);
           <div id="mcAdminActions" class="collapse d-md-block">
             <div class="row g-2">
               <div class="col-12 col-md-4">
-                <form method="post" class="js-ajax" id="rebuildIndexForm"
-                      data-confirm="Rebuild file index and shared index to match the current content of uploads folder now?">
+                <!-- Check Index = refresh page to detect drift -->
+                <button class="btn btn-outline-info w-100"
+                        type="button"
+                        id="checkIndexBtn"
+                        title="Refresh page to check for uploads drift (outer changes via SSH/FTP)."
+                        aria-label="Refresh page to check for uploads drift (outer changes via SSH/FTP).">
+                  Check Index
+                </button>
+
+                <!-- Hidden AJAX rebuild form (triggered from blocking modal) -->
+                <form method="post" class="js-ajax d-none" id="rebuildIndexForm">
                   <input type="hidden" name="csrf" value="<?=h($_SESSION['csrf'])?>">
                   <input type="hidden" name="action" value="rebuild_index">
-                  <button class="btn btn-outline-info w-100"
-                          type="submit"
-                          id="rebuildIndexBtn"
-                          title="Rebuilds file and shared indexes. Use after manual changes on disk (FTP/SSH)."
-                          aria-label="Rebuilds file and shared indexes. Use after manual changes on disk (FTP/SSH).">
-                    Rebuild Index
-                  </button>
+                  <button type="submit" id="rebuildIndexHiddenSubmit" tabindex="-1" aria-hidden="true"></button>
                 </form>
               </div>
 
@@ -1071,13 +1074,14 @@ $totalHuman = format_bytes($totalBytes);
 
       <div class="modal-body">
         <div class="alert alert-warning mb-0" role="alert">
-          Index of files has changed because of outer intervention. You must use Rebuild Index button to rebuild the index.
+          Index of files has changed because of outer intervention, or the baseline fingerprint is missing.
+          You must rebuild the index to continue.
         </div>
       </div>
 
       <div class="modal-footer">
-        <button type="button" class="btn btn-outline-info" data-bs-dismiss="modal" id="mcIndexChangedCloseBtn">
-          OK
+        <button type="button" class="btn btn-info w-100" id="mcRebuildIndexNowBtn">
+          Rebuild Index Now
         </button>
       </div>
 

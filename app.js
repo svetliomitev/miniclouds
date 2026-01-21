@@ -122,7 +122,8 @@
     footerTotal: document.getElementById('totalUploaded'),
 
     buttons: {
-      rebuildIndex: document.getElementById('rebuildIndexBtn'),
+      checkIndex: document.getElementById('checkIndexBtn'),
+      rebuildIndexForm: document.getElementById('rebuildIndexForm'),
       deleteAll: document.getElementById('deleteAllBtn'),
       reinstall: document.getElementById('reinstallBtn'),
       uploadBtn: document.getElementById('uploadBtn'),
@@ -152,7 +153,8 @@
     backToTop: document.getElementById('backToTop'),
     infoModal: document.getElementById('mcInfoModal'),
 
-    indexChangedModal: document.getElementById('mcIndexChangedModal')
+    indexChangedModal: document.getElementById('mcIndexChangedModal'),
+    indexRebuildNowBtn: document.getElementById('mcRebuildIndexNowBtn')
   };
 
   /* =========================
@@ -482,7 +484,7 @@
     // Sticky “working” (Delete All)
     function workingWarning(title, msg){
       priorityAction();
-      show('warning', title || 'Working…', msg || '', { sticky:true, noClose:true });
+      show('warning', title || 'Working...', msg || '', { sticky:true, noClose:true });
       // spinner icon
       if (DOM.toast && DOM.toast.icon) DOM.toast.icon.className = 'bi bi-arrow-repeat mc-spin';
     }
@@ -628,8 +630,8 @@
     function applyButtons(){
       var hard = HardLock.isHard();
 
-      // Rebuild is allowed even when hard-locked (but not when busy)
-      setEnabled(DOM.buttons.rebuildIndex, !busy);
+      // Check Index is allowed even when hard-locked (but not when busy)
+      setEnabled(DOM.buttons.checkIndex, !busy);
 
       setEnabled(DOM.buttons.reinstall, (!busy && !hard));
       setEnabled(DOM.buttons.deleteAll, (!busy && !hard && !!deleteAllHasFiles));
@@ -707,6 +709,99 @@
   var __mcBaseHref = (function(){
     try { return new URL('index.php', window.location.href).toString(); } catch (e) { return 'index.php'; }
   })();
+  
+  /* =========================
+    CHECK INDEX FLOW (single owner)
+    ========================= */
+  var CheckIndexFlow = (function(){
+    var pending = false;
+    var started = false;
+    var deferHard = false;
+
+    function detect(){
+      try {
+        var u = new URL(window.location.href);
+        pending = (u.searchParams.get('check') === '1');
+      } catch (e) {
+        pending = (String(window.location.search || '').indexOf('check=1') !== -1);
+      }
+      return pending;
+    }
+
+    function clearUrlFlag(){
+      try {
+        var u = new URL(window.location.href);
+        if (!u.searchParams.has('check') && !u.searchParams.has('_')) return;
+        u.searchParams.delete('check');
+        u.searchParams.delete('_');
+        window.history.replaceState(null, '', u.toString());
+      } catch (e) {}
+    }
+
+    function beginIfNeeded(){
+      if (!pending || started) return false;
+      started = true;
+      deferHard = false;
+
+      Toast.priorityAction();
+      Toast.show('warning', 'Check Index', 'Checking index state...', { ttl: 1200, noClose: true });
+
+      clearUrlFlag();
+      return true;
+    }
+
+    function isChecking(){
+      return !!started;
+    }
+
+    function markDeferHard(){
+      if (!started) return;
+      deferHard = true;
+    }
+
+    function finishFromStats(stats){
+      if (!started) return;
+
+      var forced = (Number(stats && stats.index_forced || 0) === 1);
+      var must   = (Number(stats && (stats.index_changed || stats.index_must_rebuild) || 0) === 1) || forced;
+
+      // Always close the "checking..." toast first (so modal appears after it auto-closed / is gone)
+      Toast.hideMain();
+
+      if (must || deferHard) {
+        HardLock.show();
+        UI.setBusy(UI.getBusy()); // re-apply policy
+      } else {
+        Toast.priorityAction();
+        Toast.show('success', 'Check Index', 'Index is up to date.', { ttl: 1600 });
+      }
+
+      // one-shot
+      pending = false;
+      started = false;
+      deferHard = false;
+    }
+
+    return {
+      detect: detect,
+      beginIfNeeded: beginIfNeeded,
+      isChecking: isChecking,
+      markDeferHard: markDeferHard,
+      finishFromStats: finishFromStats
+    };
+  })();
+
+  function refreshPageForCheckIndex(){
+    try {
+      var u = new URL(window.location.href);
+      // cache-bust so drift detection is re-evaluated on the server
+      u.searchParams.set('check', '1');
+      u.searchParams.set('_', String(Date.now()));
+      window.location.href = u.toString();
+    } catch (e) {
+      window.location.reload();
+    }
+  }
 
   function queryKey(){
     return 'q=' + (query.q||'') + '|from=' + (query.from||'') + '|to=' + (query.to||'') + '|flags=' + (query.flags||'all');
@@ -738,8 +833,14 @@
     if (forced) { must = true; }
 
     if (must) {
-      HardLock.show();
-      UI.setBusy(UI.getBusy()); // re-apply policy
+      // During "Check Index" refresh: defer modal until the checking toast is closed
+      if (CheckIndexFlow && CheckIndexFlow.isChecking && CheckIndexFlow.isChecking()) {
+        if (CheckIndexFlow.markDeferHard) CheckIndexFlow.markDeferHard();
+        // IMPORTANT: do not show modal here
+      } else {
+        HardLock.show();
+        UI.setBusy(UI.getBusy()); // re-apply policy
+      }
     } else {
       if (HardLock.isHard()) {
         HardLock.clear();
@@ -775,6 +876,9 @@
     .then(function(r){
       if (!r.ok || !r.data || r.data.ok !== true) return null;
       applyStats(r.data);
+      if (CheckIndexFlow && CheckIndexFlow.finishFromStats) {
+        CheckIndexFlow.finishFromStats(r.data);
+      }
       return r.data;
     })
     .catch(function(){ return null; });
@@ -816,7 +920,7 @@
       var sharedAttr = isShared ? '1' : '0';
       var url = String(f.url || '');
 
-      var pillText = isShared ? (url ? escapeHtml(url) : 'loading…') : 'File entry not shared';
+      var pillText = isShared ? (url ? escapeHtml(url) : 'loading...') : 'File entry not shared';
       var pillClickable = (isShared ? ' is-clickable' : '');
       var shareLabel = isShared ? 'Unshare' : 'Share';
 
@@ -963,7 +1067,7 @@
       if (!u) {
         var span = wrapper.querySelector('[data-link-text]');
         if (span) u = String(span.textContent || '').trim();
-        if (u === 'loading…') u = '';
+        if (u === 'loading...') u = '';
       }
 
       if (u) map[fn] = u;
@@ -1286,7 +1390,7 @@
           .then(function(r){
             if (!r.data) {
               var preview = String(r.txt || '').trim();
-              if (preview.length > 220) preview = preview.slice(0, 220) + '…';
+              if (preview.length > 220) preview = preview.slice(0, 220) + '...';
               if (r.redirected) Toast.show('danger', 'Error', 'Server redirected instead of returning JSON (AJAX not detected).');
               else Toast.show('danger', 'Error', 'Non-JSON response (' + r.status + '): ' + (preview || 'empty'));
               return null;
@@ -1379,7 +1483,7 @@
     var MAX_NAMES = 3, MAX_CHARS = 140;
     var shown = uploaded.slice(0, MAX_NAMES);
     var namesLine = shown.join(', ');
-    if (namesLine.length > MAX_CHARS) namesLine = namesLine.slice(0, MAX_CHARS - 1) + '…';
+    if (namesLine.length > MAX_CHARS) namesLine = namesLine.slice(0, MAX_CHARS - 1) + '...';
     var more = uploaded.length - shown.length;
 
     var compact = [];
@@ -1620,7 +1724,7 @@
     var pill = wrapper.querySelector('[data-link-pill]');
     if (pill) {
       var span = pill.querySelector('[data-link-text]');
-      if (span) span.textContent = isShared ? (url ? url : 'loading…') : 'File entry not shared';
+      if (span) span.textContent = isShared ? (url ? url : 'loading...') : 'File entry not shared';
 
       if (isShared) {
         pill.classList.add('is-clickable');
@@ -1866,7 +1970,48 @@
 
   /* =========================
      INIT
-     ========================= */
+     ========================= */  
+  
+  function initIndexCheckAndRebuild(){
+    // 1) Check Index button => refresh page (server re-checks drift)
+    if (DOM.buttons.checkIndex) {
+      L.on(DOM.buttons.checkIndex, 'click', function(){
+        // allow check even if hard-locked (that’s the whole point)
+        if (UI.getBusy()) return;
+        refreshPageForCheckIndex();
+      });
+    }
+
+    // 2) Blocking modal: Rebuild Index Now => trigger hidden js-ajax rebuild form, then close modal
+    if (DOM.indexRebuildNowBtn) {
+      L.on(DOM.indexRebuildNowBtn, 'click', function(){
+        if (UI.getBusy()) return;
+
+        var form = DOM.buttons.rebuildIndexForm;
+        if (!form) return;
+
+        // Close modal first (NO working toast while modal is on)
+        modalHide(DOM.indexChangedModal);
+
+        // Fire the existing centralized js-ajax submit pipeline.
+        // Small delay so Bootstrap cleanup settles.
+        setTimeout(function(){
+          if (HardLock.isHard()) {
+            // We are rebuilding; allow it
+            // (HardLock stays until applyStats clears it after rebuild)
+          }
+
+          if (typeof form.requestSubmit === 'function') {
+            form.requestSubmit();
+          } else {
+            // fallback for older browsers
+            form.dispatchEvent(new Event('submit', { bubbles:true, cancelable:true }));
+          }
+        }, 50);
+      });
+    }
+  }
+
   function initFlash(){
     var ok = Array.isArray(BOOT.flashOk) ? BOOT.flashOk : [];
     var err = Array.isArray(BOOT.flashErr) ? BOOT.flashErr : [];
@@ -1994,6 +2139,9 @@
   }
 
   function initInitialPaint(){
+    CheckIndexFlow.detect();
+    CheckIndexFlow.beginIfNeeded();
+
     // First-paint stats application (same path as ajax=stats)
     applyStats({
       index_changed: Number(BOOT.index_changed || 0),
@@ -2031,6 +2179,7 @@
      ========================= */
   initFlash();
   initInitialPaint();
+  initIndexCheckAndRebuild();
   initSearch();
   wireAjaxForms();
   wireUpload();
