@@ -247,12 +247,7 @@ function mc_read_state(): array {
     $j = json_decode($raw, true);
     if (!is_array($j)) return [];
 
-    /* ---------------------------------
-       Normalize allow_ips (canonical: array)
-       - supports old string format
-       - cleans whitespace
-       - de-duplicates
-       --------------------------------- */
+    /* normalize allow_ips to array */
     if (array_key_exists('allow_ips', $j)) {
         if (is_string($j['allow_ips'])) {
             $s = trim($j['allow_ips']);
@@ -261,35 +256,27 @@ function mc_read_state(): array {
             } else {
                 $parts = preg_split('~[,\s]+~', $s, -1, PREG_SPLIT_NO_EMPTY);
                 $out = [];
-                foreach ($parts as $p) {
-                    $p = trim((string)$p);
-                    if ($p !== '') $out[] = $p;
+                foreach ($parts as $p2) {
+                    $p2 = trim((string)$p2);
+                    if ($p2 !== '') $out[] = $p2;
                 }
                 $j['allow_ips'] = array_values(array_unique($out));
             }
         } elseif (is_array($j['allow_ips'])) {
             $out = [];
-            foreach ($j['allow_ips'] as $p) {
-                $p = trim((string)$p);
-                if ($p !== '') $out[] = $p;
+            foreach ($j['allow_ips'] as $p2) {
+                $p2 = trim((string)$p2);
+                if ($p2 !== '') $out[] = $p2;
             }
             $j['allow_ips'] = array_values(array_unique($out));
         } else {
-            // unexpected type → make safe
             $j['allow_ips'] = [];
         }
     } else {
-        // always present for callers
         $j['allow_ips'] = [];
     }
 
-    /* ---------------------------------
-       Normalize page_size + quota_files
-       - always provide safe defaults
-       --------------------------------- */
-
     // page_size default 20, clamp 20..200
-
     $ps = (int)($j['page_size'] ?? 20);
     if ($ps < 20) $ps = 20;
     if ($ps > 200) $ps = 200;
@@ -316,7 +303,7 @@ function mc_is_installed(): bool {
 
 function mc_rewrite_base(): string {
     $b = mc_base_uri();
-    return ($b === '' ? '/' : ($b . '/')); // "/" or "/subdir/app/"
+    return ($b === '' ? '/' : ($b . '/'));
 }
 
 /**
@@ -328,22 +315,16 @@ function mc_auth_realm_from_app_name(string $appName): string
     $s = trim($appName);
     $s = preg_replace('~\s+~u', ' ', $s) ?: '';
 
-    // Cyrillic (BG-friendly) -> Latin (simple, predictable)
     $map = [
         'А'=>'A','Б'=>'B','В'=>'V','Г'=>'G','Д'=>'D','Е'=>'E','Ж'=>'Zh','З'=>'Z','И'=>'I','Й'=>'Y','К'=>'K','Л'=>'L','М'=>'M','Н'=>'N','О'=>'O','П'=>'P','Р'=>'R','С'=>'S','Т'=>'T','У'=>'U','Ф'=>'F','Х'=>'H','Ц'=>'Ts','Ч'=>'Ch','Ш'=>'Sh','Щ'=>'Sht','Ъ'=>'A','Ь'=>'Y','Ю'=>'Yu','Я'=>'Ya',
         'а'=>'a','б'=>'b','в'=>'v','г'=>'g','д'=>'d','е'=>'e','ж'=>'zh','з'=>'z','и'=>'i','й'=>'y','к'=>'k','л'=>'l','м'=>'m','н'=>'n','о'=>'o','п'=>'p','р'=>'r','с'=>'s','т'=>'t','у'=>'u','ф'=>'f','х'=>'h','ц'=>'ts','ч'=>'ch','ш'=>'sh','щ'=>'sht','ъ'=>'a','ь'=>'y','ю'=>'yu','я'=>'ya',
     ];
 
     $s = strtr($s, $map);
-
-    // Keep only ASCII letters, digits, spaces, and a few safe separators.
     $s = preg_replace('~[^A-Za-z0-9 _.-]+~', '', $s) ?: '';
     $s = trim(preg_replace('~\s+~', ' ', $s) ?: '');
 
-    // Avoid empty realms
     if ($s === '') return 'MiniCloudS';
-
-    // Safety: prevent quotes breaking .htaccess line
     $s = str_replace('"', '', $s);
 
     return $s;
@@ -365,7 +346,6 @@ function mc_write_install_state(
     $existingId = '';
     $eid = (string)($existing['instance_id'] ?? '');
 
-    // accept 20..64 hex; keep whatever already exists if valid
     if ($eid !== '' && preg_match('~^[a-f0-9]{20,64}$~i', $eid)) {
         $existingId = strtolower($eid);
     }
@@ -376,13 +356,12 @@ function mc_write_install_state(
     $payload = [
         'installed'    => true,
         'installed_at' => date('c'),
-        'instance_id'  => ($existingId !== '' ? $existingId : bin2hex(random_bytes(10))), // 80-bit hex (20 chars)
+        'instance_id'  => ($existingId !== '' ? $existingId : bin2hex(random_bytes(10))),
     ];
 
     $adminUser = trim((string)$adminUser);
     if ($adminUser !== '') $payload['admin_user'] = $adminUser;
 
-    // store normalized allowlist as array, always present
     $norm = [];
     foreach ($allowIps as $v) {
         if (!is_string($v)) continue;
@@ -429,7 +408,6 @@ function mc_htpasswd_read_hash(string $htpasswdPath): string {
     $hash = trim((string)($parts[1] ?? ''));
     if ($hash === '') return '';
 
-    // bcrypt ($2y$, $2a$, $2b$)
     if (!preg_match('~^\$2[aby]\$~', $hash)) return '';
 
     return $hash;
@@ -449,7 +427,6 @@ function mc_install_gate_or_redirect(): void {
             exit;
         }
     } catch (\Throwable $e) {
-        // If anything goes wrong (corrupt JSON, unexpected env), fail-safe to installer.
         $base = mc_base_uri();
         header('Location: ' . ($base === '' ? '' : $base) . '/install.php', true, 302);
         exit;
@@ -510,15 +487,18 @@ function flash_pop(): array {
 }
 
 /* =========================
-   APCu (best-effort)
+   APCu (best-effort, namespaced)
+   - IMPORTANT: DO NOT define apcu_enabled(): APCu extension may already provide it (internal)
    ========================= */
 
-function apcu_enabled(): bool {
+function mc_apcu_enabled(): bool {
     if (!function_exists('apcu_fetch') || !function_exists('apcu_store')) return false;
 
+    // APCu master switch
     $en = (string)ini_get('apc.enabled');
     if ($en === '0') return false;
 
+    // CLI is usually off (irrelevant for FPM, but safe)
     if (PHP_SAPI === 'cli') {
         $cli = (string)ini_get('apc.enable_cli');
         if ($cli !== '1') return false;
@@ -527,30 +507,30 @@ function apcu_enabled(): bool {
     return true;
 }
 
-function apcu_prefix(): string {
+function mc_apcu_prefix(): string {
     static $p = null;
     if ($p !== null) return $p;
     $p = 'mc:' . sha1(__DIR__);
     return $p;
 }
 
-function apcu_key(string $name): string {
-    return apcu_prefix() . ':' . $name;
+function mc_apcu_key(string $name): string {
+    return mc_apcu_prefix() . ':' . $name;
 }
 
-function apcu_get(string $key, &$ok = null) {
+function mc_apcu_get(string $key, &$ok = null) {
     $ok = false;
-    if (!apcu_enabled()) return null;
+    if (!mc_apcu_enabled()) return null;
     return apcu_fetch($key, $ok);
 }
 
-function apcu_set(string $key, $val, int $ttl = 0): void {
-    if (!apcu_enabled()) return;
+function mc_apcu_set(string $key, $val, int $ttl = 0): void {
+    if (!mc_apcu_enabled()) return;
     @apcu_store($key, $val, $ttl);
 }
 
-function apcu_del(string $key): void {
-    if (!apcu_enabled()) return;
+function mc_apcu_del(string $key): void {
+    if (!mc_apcu_enabled()) return;
     @apcu_delete($key);
 }
 
@@ -570,7 +550,6 @@ function atomic_write_json(string $path, array $data, bool $pretty = false): boo
     $json = json_encode($data, $flags);
     if (!is_string($json)) return false;
 
-    // Keep a trailing newline for human-edited config files (install_state.json etc.)
     if ($pretty) $json .= "\n";
 
     $fh = @fopen($tmp, 'wb');
@@ -615,11 +594,11 @@ function mc_cmp_file_index_newest_first(array $a, array $b): int {
     $am = (int)($a['mtime'] ?? 0);
     $bm = (int)($b['mtime'] ?? 0);
 
-    if ($am !== $bm) return ($bm <=> $am); // DESC (newest first)
+    if ($am !== $bm) return ($bm <=> $am); // DESC
 
     $an = (string)($a['name'] ?? '');
     $bn = (string)($b['name'] ?? '');
-    return strcmp($an, $bn); // ASC tie-break
+    return strcmp($an, $bn);
 }
 
 /**
@@ -631,9 +610,9 @@ function file_index_load(string $cacheDir): array {
     $mt = @filemtime($p);
     $mt = ($mt === false) ? 0 : (int)$mt;
 
-    $k = apcu_key('file_index');
+    $k = mc_apcu_key('file_index');
     $ok = false;
-    $cached = apcu_get($k, $ok);
+    $cached = mc_apcu_get($k, $ok);
 
     if ($ok && is_array($cached)
         && (($cached['mt'] ?? -1) === $mt)
@@ -643,19 +622,19 @@ function file_index_load(string $cacheDir): array {
     }
 
     if (!is_file($p)) {
-        apcu_set($k, ['mt' => $mt, 'list' => []], 0);
+        mc_apcu_set($k, ['mt' => $mt, 'list' => []], 0);
         return [];
     }
 
     $raw = @file_get_contents($p);
     if (!is_string($raw) || $raw === '') {
-        apcu_set($k, ['mt' => $mt, 'list' => []], 0);
+        mc_apcu_set($k, ['mt' => $mt, 'list' => []], 0);
         return [];
     }
 
     $j = json_decode($raw, true);
     if (!is_array($j)) {
-        apcu_set($k, ['mt' => $mt, 'list' => []], 0);
+        mc_apcu_set($k, ['mt' => $mt, 'list' => []], 0);
         return [];
     }
 
@@ -674,7 +653,7 @@ function file_index_load(string $cacheDir): array {
 
     usort($out, 'mc_cmp_file_index_newest_first');
 
-    apcu_set($k, ['mt' => $mt, 'list' => $out], 0);
+    mc_apcu_set($k, ['mt' => $mt, 'list' => $out], 0);
     return $out;
 }
 
@@ -703,7 +682,7 @@ function file_index_save(string $cacheDir, array $fileIndex): bool {
     if ($ok) {
         $mt = @filemtime($p);
         $mt = ($mt === false) ? 0 : (int)$mt;
-        apcu_set(apcu_key('file_index'), ['mt' => $mt, 'list' => $out], 0);
+        mc_apcu_set(mc_apcu_key('file_index'), ['mt' => $mt, 'list' => $out], 0);
     }
     return $ok;
 }
@@ -760,7 +739,6 @@ function mc_uploads_list_files(string $uploadDir): array {
         $path = $uploadDir . '/' . $name;
         if (!is_file($path)) continue;
 
-        // keep basenames only
         $out[] = $name;
     }
 
@@ -770,7 +748,7 @@ function mc_uploads_list_files(string $uploadDir): array {
 
 /**
  * Upsert (insert or replace) one record by name.
- * Returns new array (keeps it functional like your call site expects).
+ * Returns new array.
  */
 function file_index_upsert(array $fileIndex, array $row): array {
     $name = (string)($row['name'] ?? '');
@@ -838,9 +816,9 @@ function shared_index_load(string $cacheDir): array {
     $mt = @filemtime($p);
     $mt = ($mt === false) ? 0 : (int)$mt;
 
-    $k = apcu_key('shared_index');
+    $k = mc_apcu_key('shared_index');
     $ok = false;
-    $cached = apcu_get($k, $ok);
+    $cached = mc_apcu_get($k, $ok);
 
     if ($ok && is_array($cached)
         && (($cached['mt'] ?? -1) === $mt)
@@ -855,19 +833,19 @@ function shared_index_load(string $cacheDir): array {
     }
 
     if (!is_file($p)) {
-        apcu_set($k, ['mt' => $mt, 'set' => [], 'complete' => false]);
+        mc_apcu_set($k, ['mt' => $mt, 'set' => [], 'complete' => false], 0);
         return ['v' => 2, 'set' => [], 'complete' => false];
     }
 
     $raw = @file_get_contents($p);
     if (!is_string($raw) || $raw === '') {
-        apcu_set($k, ['mt' => $mt, 'set' => [], 'complete' => false]);
+        mc_apcu_set($k, ['mt' => $mt, 'set' => [], 'complete' => false], 0);
         return ['v' => 2, 'set' => [], 'complete' => false];
     }
 
     $j = json_decode($raw, true);
     if (!is_array($j)) {
-        apcu_set($k, ['mt' => $mt, 'set' => [], 'complete' => false]);
+        mc_apcu_set($k, ['mt' => $mt, 'set' => [], 'complete' => false], 0);
         return ['v' => 2, 'set' => [], 'complete' => false];
     }
 
@@ -876,7 +854,7 @@ function shared_index_load(string $cacheDir): array {
 
     $complete = (bool)($j['complete'] ?? false);
 
-    apcu_set($k, ['mt' => $mt, 'set' => $set, 'complete' => $complete]);
+    mc_apcu_set($k, ['mt' => $mt, 'set' => $set, 'complete' => $complete], 0);
     return ['v' => 2, 'set' => $set, 'complete' => $complete];
 }
 
@@ -893,7 +871,7 @@ function shared_index_save(string $cacheDir, array $set, bool $complete = true):
         $mt = @filemtime($p);
         $mt = ($mt === false) ? 0 : (int)$mt;
 
-        apcu_set(apcu_key('shared_index'), [
+        mc_apcu_set(mc_apcu_key('shared_index'), [
             'mt' => $mt,
             'set' => $set,
             'complete' => $complete,
@@ -927,14 +905,11 @@ function shared_index_add_filename_preserve_complete(string $cacheDir, string $f
 
     $set[$h] = 1;
 
-    // Never force complete=true here; preserve existing flag.
     shared_index_save($cacheDir, $set, $complete);
 }
 
 /* =========================
-   SHARED INDEX
-   - Stored in cache/shared_index.json (set + complete flag)
-   - byname dir stores per-filename mapping to link code
+   SHARED INDEX (disk rebuild)
    ========================= */
 
 function shared_index_count_txt(string $byDir): int {
@@ -958,19 +933,12 @@ function shared_index_count_txt(string $byDir): int {
 
 /**
  * Rebuild shared set from disk using linkDir/*.json as source of truth.
- * Validates:
- * - json file name is code (or code inside json)
- * - json contains 'f' filename
- * - upload exists
  * Recreates byname/*.txt for valid records.
- *
- * Returns: shared set array (for shared_index_save).
  */
 function shared_index_rebuild_from_disk(string $linkDir, string $byDir, string $uploadDir): array {
     if (!is_dir($linkDir)) @mkdir($linkDir, 0755, true);
     if (!is_dir($byDir)) @mkdir($byDir, 0755, true);
 
-    // Clear byname dir (safe: it's rebuild)
     try {
         $it = new DirectoryIterator($byDir);
         foreach ($it as $fi) {
@@ -980,9 +948,7 @@ function shared_index_rebuild_from_disk(string $linkDir, string $byDir, string $
             if ($fn === '' || !str_ends_with($fn, '.txt')) continue;
             @unlink($byDir . '/' . $fn);
         }
-    } catch (\Throwable $e) {
-        // ignore
-    }
+    } catch (\Throwable $e) {}
 
     $set = [];
     try {
@@ -1002,62 +968,34 @@ function shared_index_rebuild_from_disk(string $linkDir, string $byDir, string $
             if (!is_array($j)) { @unlink($path); continue; }
 
             $code = (string)($j['c'] ?? '');
-            if ($code === '') {
-                // fallback: derive from filename "<code>.json"
-                $code = substr($fname, 0, -5);
-            }
+            if ($code === '') $code = substr($fname, 0, -5);
             if (!preg_match('~^[A-Za-z0-9_-]{6,32}$~', $code)) { @unlink($path); continue; }
 
             $file = (string)($j['f'] ?? '');
             $file = safe_basename($file);
             if ($file === '' || (isset($file[0]) && $file[0] === '.')) { @unlink($path); continue; }
 
-            // upload must exist
             $up = rtrim($uploadDir, '/\\') . '/' . $file;
-            if (!is_file($up)) {
-                @unlink($path);
-                continue;
-            }
+            if (!is_file($up)) { @unlink($path); continue; }
 
-            // Write byname file (byname_path must exist in lib.php already)
             $by = byname_path($byDir, $file);
             @file_put_contents($by, $code . "\n");
 
-            // Add to shared set (shared_index_add must exist; if not, we can inline it)
-            if (function_exists('shared_index_add')) {
-                shared_index_add($set, $file);
-            } else {
-                // minimal fallback: set as associative for fast lookup
-                $set[$file] = 1;
-            }
+            shared_index_add($set, $file);
         }
-    } catch (\Throwable $e) {
-        // ignore
-    }
+    } catch (\Throwable $e) {}
 
     return $set;
 }
 
 /* =========================
    UPLOADS FINGERPRINT (DRIFT DETECTION ONLY)
-   - Baseline saved in cache/uploads_fingerprint.json
-   - Cheap signature computed on every GET (no sort, no big arrays)
-   - Strong hash computed only on explicit rebuild
    ========================= */
 
 function mc_uploads_fingerprint_path(string $cacheDir): string {
     return rtrim($cacheDir, '/\\') . '/uploads_fingerprint.json';
 }
 
-/**
- * Compute CHEAP signature of uploads directory contents.
- * One pass, no sort, low memory.
- *
- * Fields:
- * - count, total_bytes, max_mtime
- * - crc_xor: XOR aggregate of per-file CRC32
- * - crc_sum: SUM aggregate of per-file CRC32 (mod 2^32)
- */
 function mc_uploads_signature_compute(string $uploadDir): array {
     if (!is_dir($uploadDir) || !is_readable($uploadDir)) return [];
 
@@ -1065,7 +1003,6 @@ function mc_uploads_signature_compute(string $uploadDir): array {
     $total = 0;
     $maxM  = 0;
 
-    // 32-bit aggregates (we store as unsigned-ish integers in JSON)
     $crcXor = 0;
     $crcSum = 0;
 
@@ -1087,14 +1024,11 @@ function mc_uploads_signature_compute(string $uploadDir): array {
             $total += $size;
             if ($mtime > $maxM) $maxM = $mtime;
 
-            // Per-file signature string (small) -> CRC32
             $s = $name . "\0" . $size . "\0" . $mtime;
 
-            // crc32() returns signed int sometimes; normalize to 0..2^32-1
             $c = crc32($s);
             if ($c < 0) $c = $c + 4294967296;
 
-            // XOR and SUM (mod 2^32)
             $crcXor = $crcXor ^ $c;
             $crcSum = ($crcSum + $c) % 4294967296;
         }
@@ -1102,29 +1036,17 @@ function mc_uploads_signature_compute(string $uploadDir): array {
         return [];
     }
 
-    // Normalize to ints (JSON)
-    $crcXor = (int)$crcXor;
-    $crcSum = (int)$crcSum;
-
     return [
         'v' => 2,
         'generated_at' => gmdate('c'),
         'count' => (int)$count,
         'total_bytes' => (int)$total,
         'max_mtime' => (int)$maxM,
-        'crc_xor' => $crcXor,
-        'crc_sum' => $crcSum,
-        // strong_sha256 optional (added by rebuild)
+        'crc_xor' => (int)$crcXor,
+        'crc_sum' => (int)$crcSum,
     ];
 }
 
-/**
- * Compute STRONG fingerprint of uploads directory contents.
- * This is the expensive one: collects rows, sorts, sha256.
- * Use ONLY during explicit rebuild.
- *
- * Returns 64-hex sha256 or '' on failure.
- */
 function mc_uploads_strong_sha256_compute(string $uploadDir): string {
     if (!is_dir($uploadDir) || !is_readable($uploadDir)) return '';
 
@@ -1163,12 +1085,6 @@ function mc_uploads_strong_sha256_compute(string $uploadDir): string {
     return strtolower($sha);
 }
 
-/**
- * Load baseline fingerprint.
- * Accepts:
- * - v1 old format (your previous) -> treated as "known but weak"; will not drift unless fields exist
- * - v2 new format
- */
 function mc_uploads_fingerprint_load(string $cacheDir): array {
     $p = mc_uploads_fingerprint_path($cacheDir);
     if (!is_file($p)) return [];
@@ -1182,7 +1098,6 @@ function mc_uploads_fingerprint_load(string $cacheDir): array {
     $v = (int)($j['v'] ?? 0);
 
     if ($v === 2) {
-        // required cheap fields
         if (!isset($j['count'], $j['total_bytes'], $j['max_mtime'], $j['crc_xor'], $j['crc_sum'])) return [];
 
         return [
@@ -1197,7 +1112,6 @@ function mc_uploads_fingerprint_load(string $cacheDir): array {
         ];
     }
 
-    // v1 legacy: keep compatibility if you already have old files lying around
     if ($v === 1) {
         $sha = (string)($j['sha256'] ?? '');
         if (!preg_match('~^[a-f0-9]{64}$~i', $sha)) return [];
@@ -1217,7 +1131,6 @@ function mc_uploads_fingerprint_load(string $cacheDir): array {
 function mc_uploads_fingerprint_save(string $cacheDir, array $payload): bool {
     $p = mc_uploads_fingerprint_path($cacheDir);
 
-    // We only save v2 going forward
     $v = (int)($payload['v'] ?? 0);
     if ($v !== 2) return false;
 
@@ -1239,29 +1152,20 @@ function mc_uploads_fingerprint_save(string $cacheDir, array $payload): bool {
     return atomic_write_json($p, $data);
 }
 
-/**
- * Drift detection against baseline fingerprint.
- * - Baseline missing/invalid => known=false, drift=false (no warning)
- * - Compute cheap signature every time (per your requirement).
- * - Drift is decided by comparing cheap fields (v2) or sha256 (v1).
- */
 function mc_uploads_drift_detect(string $cacheDir, string $uploadDir): array {
     $base = mc_uploads_fingerprint_load($cacheDir);
     if (!$base) {
         return ['known' => false, 'drift' => false, 'baseline' => [], 'current' => []];
     }
 
-    // Always compute current signature (no throttling)
     $cur = mc_uploads_signature_compute($uploadDir);
     if (!$cur) {
-        // If we can't compute, stay quiet.
         return ['known' => true, 'drift' => false, 'baseline' => $base, 'current' => []];
     }
 
     $drift = false;
 
     if ((int)($base['v'] ?? 0) === 2) {
-        // Compare cheap signature fields
         $drift = (
             (int)$base['count'] !== (int)$cur['count']
             || (int)$base['total_bytes'] !== (int)$cur['total_bytes']
@@ -1270,22 +1174,12 @@ function mc_uploads_drift_detect(string $cacheDir, string $uploadDir): array {
             || (int)$base['crc_sum'] !== (int)$cur['crc_sum']
         );
     } else {
-        // v1 baseline: compare old sha256 to a strong hash only if you want; but per your new rule,
-        // we keep it cheap and simply don't assert drift based on v1 unless you rebuild once.
-        // Best: after first rebuild you will write v2 and be done.
         $drift = false;
     }
 
     return ['known' => true, 'drift' => $drift, 'baseline' => $base, 'current' => $cur];
 }
 
-/**
- * Returns index safety status:
- * - must: true => block actions and require rebuild
- * - missing: file_index.json missing
- * - known: baseline fingerprint exists
- * - drift: uploads differ from baseline
- */
 function mc_index_must_rebuild(string $cacheDir, string $uploadDir): array {
     $fileIndexPath = rtrim($cacheDir, '/\\') . '/file_index.json';
     $missing = !is_file($fileIndexPath);
@@ -1294,7 +1188,7 @@ function mc_index_must_rebuild(string $cacheDir, string $uploadDir): array {
     $known = (bool)($dr['known'] ?? false);
     $drift = (bool)($dr['drift'] ?? false);
 
-    // Treat "unknown baseline" as unsafe (must rebuild)
+    // Safe policy: missing index OR missing baseline OR drift => must rebuild
     $must = ($missing || !$known || $drift);
 
     return [
@@ -1305,18 +1199,6 @@ function mc_index_must_rebuild(string $cacheDir, string $uploadDir): array {
     ];
 }
 
-/**
- * Returns normalized index/baseline status flags for UI.
- * All values are strict booleans; also returns the raw idx array.
- *
- * @return array{
- *   missing: bool,
- *   known: bool,
- *   must: bool,
- *   drift: bool,
- *   raw: array
- * }
- */
 function mc_index_flags(string $cacheDir, string $uploadDir): array {
     $idx = mc_index_must_rebuild($cacheDir, $uploadDir);
 
@@ -1329,10 +1211,6 @@ function mc_index_flags(string $cacheDir, string $uploadDir): array {
     ];
 }
 
-/**
- * Sum total bytes from a file index array.
- * Expects items like ['size' => int].
- */
 function mc_index_total_bytes(array $fileIndex): int {
     $t = 0;
     foreach ($fileIndex as $it) {
@@ -1603,8 +1481,6 @@ function php_max_file_uploads(): int {
    ========================= */
 
 function mc_mark_admin_session_from_basic_auth(): void {
-    // Call after mc_session_start().
-    // Marks the session as "admin-ok" when Apache BasicAuth succeeded.
     if (session_status() !== PHP_SESSION_ACTIVE) return;
 
     $ru = (string)($_SERVER['REMOTE_USER'] ?? '');
@@ -1631,7 +1507,6 @@ function mc_require_admin_session_or_pretty_403(
     if (!mc_is_admin_session()) {
         mc_render_pretty_page('403 Forbidden', $lead, $detail, 403);
     }
-    // release session lock so other actions proceed
     if (session_status() === PHP_SESSION_ACTIVE) {
         session_write_close();
     }
@@ -1652,7 +1527,7 @@ function mc_require_admin_session_or_json_403(string $msg = 'Forbidden', bool $c
 /* =========================
    ENDPOINT GUARDS
    ========================= */
-  
+
 function mc_require_ajax_post_or_pretty_403(
     string $lead = 'Direct access is not allowed.',
     string $detail = 'This endpoint is for AJAX POST requests only.'
@@ -1675,7 +1550,6 @@ function mc_render_pretty_page(string $title, string $lead, string $detail = '',
 
     $home = mc_home_url();
 
-    // Use shared h() helper for consistency
     $safeTitle  = h($title);
     $safeLead   = h($lead);
     $safeDetail = h($detail);
@@ -1705,6 +1579,7 @@ function mc_render_pretty_page(string $title, string $lead, string $detail = '',
 
     echo '<div class="d-grid gap-2 d-md-flex">';
     echo '<a class="btn btn-primary" href="' . $safeHome . '">Go to Home</a>';
+
     $ref = (string)($_SERVER['HTTP_REFERER'] ?? '');
     $ref = ($ref !== '' ? $ref : $home);
     $safeRef = h($ref);
