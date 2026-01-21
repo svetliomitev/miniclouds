@@ -8,7 +8,7 @@ mc_session_start();
 
 $nonce = mc_csp_nonce();
 
-$APP_VERSION = '1.9.2';
+$APP_VERSION = '1.9.11';
 
 /* =========================
    INSTALLER / RECONFIGURATOR
@@ -37,7 +37,15 @@ if ($alreadyInstalled) {
    Allowed preset values
    ========================= */
 $PAGE_SIZE_CHOICES = [20, 50, 100, 200];
-$QUOTA_CHOICES     = [1000, 2000, 5000, 10000, 20000, 25000];
+$QUOTA_CHOICES     = [100, 200, 500, 1000, 2000, 5000, 10000, 20000, 25000];
+$DEFAULT_PAGE_SIZE   = 20;
+$DEFAULT_QUOTA_FILES = 100;
+$APPNAME_MIN_LEN = 3;
+$APPNAME_MAX_LEN = 20;
+$PASS_MIN_LEN = 8;
+$PASS_MAX_LEN = 128;
+$USERNAME_MIN_LEN = 5;
+$USERNAME_MAX_LEN = 12;
 
 /* -------------------------
    Inline error + form state
@@ -48,21 +56,23 @@ $userVal     = 'admin';
 $authNameVal = 'MiniCloudS';
 $ipsVal      = '';
 
-$pageSizeVal = '20';
-$quotaVal    = '10000'; // sensible default; can adjust later
+$pageSizeVal = (string)$DEFAULT_PAGE_SIZE;
+$quotaVal    = (string)$DEFAULT_QUOTA_FILES; // default quota
 
 $passVal     = '';
 $pass2Val    = '';
 
-$pageSize = 20;
-$quotaFiles = 10000;
+$pageSize = (int)$DEFAULT_PAGE_SIZE;
+$quotaFiles = (int)$DEFAULT_QUOTA_FILES;
 
 /* Prefill from install_state.json on reinstall (reconfigurator mode) */
 if ($alreadyInstalled) {
     $st = mc_read_state();
     if (is_array($st)) {
         if (!empty($st['app_name']) && is_string($st['app_name'])) {
-            $authNameVal = trim((string)$st['app_name']);
+            $authNameVal = (string)$st['app_name'];
+            $authNameVal = preg_replace('~[\s\x{00A0}]+~u', ' ', $authNameVal) ?: '';
+            $authNameVal = trim($authNameVal);
         }
         if (!empty($st['admin_user']) && is_string($st['admin_user'])) {
             $userVal = trim((string)$st['admin_user']);
@@ -80,7 +90,7 @@ if ($alreadyInstalled) {
         $pageSize = $ps;
 
         $qf = (int)$st['quota_files']; // normalized by mc_read_state()
-        if (!in_array($qf, $QUOTA_CHOICES, true)) $qf = (int)($QUOTA_CHOICES[3] ?? 10000);
+        if (!in_array($qf, $QUOTA_CHOICES, true)) $qf = (int)$DEFAULT_QUOTA_FILES;
         $quotaVal = (string)$qf;
         $quotaFiles = $qf;
     }
@@ -94,24 +104,47 @@ $existingHtHash = ($alreadyInstalled ? mc_htpasswd_read_hash($HTPASSWD) : '');
    ------------------------- */
 if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && (string)($_POST['action'] ?? '') === 'install') {
 
-    $authNameVal = trim((string)($_POST['authname'] ?? 'MiniCloudS'));
-    $authNameVal = preg_replace('~\s+~', ' ', $authNameVal) ?: '';
+    $authNameVal = (string)($_POST['authname'] ?? $authNameVal);
+    // Normalize Unicode whitespace (incl. NBSP) to single spaces, then trim
+    $authNameVal = preg_replace('~[\s\x{00A0}]+~u', ' ', $authNameVal) ?: '';
+    $authNameVal = trim($authNameVal);
 
     $userVal     = trim((string)($_POST['user'] ?? 'admin'));
     $ipsVal      = trim((string)($_POST['ips'] ?? ''));
 
-    $pageSizeVal = trim((string)($_POST['pagesize'] ?? '20'));
-    $quotaVal    = trim((string)($_POST['quota_files'] ?? '10000'));
+    $pageSizeVal = trim((string)($_POST['pagesize'] ?? $DEFAULT_PAGE_SIZE));
+    $quotaVal    = trim((string)($_POST['quota_files'] ?? $DEFAULT_QUOTA_FILES));
 
     // Keep password values on error (requested)
     $passVal  = (string)($_POST['pass'] ?? '');
     $pass2Val = (string)($_POST['pass2'] ?? '');
 
     /* Validate */
-    if ($authNameVal === '' || !preg_match('~^[A-Za-z](?:[A-Za-z ]{0,62}[A-Za-z])?$~', $authNameVal)) {
-        $error = 'Bad application name. Allowed: latin letters and spaces only (1-64 chars).';
-    } elseif ($userVal === '' || !preg_match('~^[A-Za-z0-9._-]{1,64}$~', $userVal)) {
-        $error = 'Bad username (allowed: A-Z a-z 0-9 . _ -)';
+    // Letters (any language) + spaces between words, total length 3–20
+    // - no leading/trailing spaces (we trim above)
+    // - no double spaces (we normalize above)
+    // - at least one letter
+    $re = '~^(?=.{'.$APPNAME_MIN_LEN.','.$APPNAME_MAX_LEN.'}$)\p{L}+(?: \p{L}+)*$~u';
+
+    if ($authNameVal === '' || !preg_match($re, $authNameVal)) {
+        $error = 'Bad application name. Allowed: letters and spaces only (including Cyrillic), length '
+            . $APPNAME_MIN_LEN . '–' . $APPNAME_MAX_LEN . '.';
+    } elseif (
+        $userVal === '' ||
+        strlen($userVal) < $USERNAME_MIN_LEN ||
+        strlen($userVal) > $USERNAME_MAX_LEN ||
+        !preg_match('~^[A-Za-z][A-Za-z0-9._-]*$~', $userVal)
+    ) {
+        $error = 'Bad username. Allowed: ASCII letters/digits plus . _ - '
+            . '(must start with a letter, length '
+            . $USERNAME_MIN_LEN . '–' . $USERNAME_MAX_LEN . ').';
+    } elseif (strpos($userVal, ':') !== false) {
+        // Safety: ":" is a delimiter in .htpasswd (user:hash)
+        $error = 'Bad username. Character ":" is not allowed.';
+    } elseif (preg_match('~[._-]$~', $userVal)) {
+        $error = 'Bad username. Must not end with . _ or -';
+    } elseif (preg_match('~[._-]{2,}~', $userVal)) {
+        $error = 'Bad username. Avoid repeated separators like "..", "__", "--".';
     } else {
         $ps = (int)$pageSizeVal;
         if (!in_array($ps, $PAGE_SIZE_CHOICES, true)) {
@@ -132,14 +165,29 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && (string)($_POST['action'] ?
 
     if ($error === '') {
         // Password rules:
+        // - ASCII printable characters only (no spaces, no Unicode)
+        // - Length: 8..128
         // - First install: required + must match
         // - Reinstall: blank+blank means "keep existing"
+
         if (!$isFirstInstall && $passVal === '' && $pass2Val === '') {
             if ($existingHtHash === '') {
                 $error = 'Existing password hash not found; please set a new password.';
             }
-        } elseif ($passVal === '' || $passVal !== $pass2Val) {
-            $error = 'Password empty or mismatch.';
+        } else {
+            if ($passVal === '' || $passVal !== $pass2Val) {
+                $error = 'Password empty or mismatch.';
+            } elseif (
+                strlen($passVal) < $PASS_MIN_LEN ||
+                strlen($passVal) > $PASS_MAX_LEN
+            ) {
+                $error = 'Password length must be between '
+                    . $PASS_MIN_LEN . ' and ' . $PASS_MAX_LEN . ' characters.';
+            } elseif (!preg_match('~^[\x21-\x7E]+$~', $passVal)) {
+                // ASCII 33 (!) .. 126 (~), excludes space and all Unicode
+                $error = 'Password contains invalid characters. '
+                    . 'Use standard ASCII symbols only (no spaces, no Cyrillic).';
+            }
         }
     }
 
@@ -222,7 +270,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && (string)($_POST['action'] ?
                 @chmod($HTPASSWD, 0640);
 
                 $rwBase       = mc_rewrite_base(); // from lib.php
-                $authNameSafe = str_replace('"', '', $authNameVal);
+                $authNameSafe = mc_auth_realm_from_app_name($authNameVal);
 
                 $indexIpRules = ($ips ? ('Require ip ' . implode(' ', $ips)) : 'Require all granted');
 
@@ -367,6 +415,7 @@ function mc_choice_label_int(int $v): string {
 }
 
 $btnLabel = $alreadyInstalled ? 'Save Settings' : 'Install MiniCloudS';
+$indexUrl = ($baseUri === '' ? '' : $baseUri) . '/index.php';
 
 echo '<!doctype html><html lang="en" data-bs-theme="dark"><head>';
 echo '<meta charset="utf-8">';
@@ -464,7 +513,7 @@ echo '          <input class="form-control" id="user" name="user" value="' . h($
 echo '        </div>';
 
 echo '        <div class="col-12 col-md-6">';
-echo '          <label class="form-label">Password</label>';
+echo '          <label class="form-label">Password (ASCII only)</label>';
 echo '          <div class="input-group">';
 echo '            <input class="form-control" id="pass" type="password" name="pass" value="' . h($passVal) . '" ' . ($alreadyInstalled ? 'placeholder="Leave blank to keep existing password"' : 'required') . '>';
 echo '            <button class="btn btn-outline-secondary" type="button" data-toggle="pw" data-target="pass" aria-label="Show password">Show</button>';
@@ -487,7 +536,7 @@ echo '        </div>';
 
 /* ---- Files per page dropdown ---- */
 $psInt = (int)$pageSizeVal;
-if (!in_array($psInt, $PAGE_SIZE_CHOICES, true)) $psInt = 20;
+if (!in_array($psInt, $PAGE_SIZE_CHOICES, true)) $psInt = (int)$DEFAULT_PAGE_SIZE;
 
 echo '        <div class="col-12 col-md-6">';
 echo '          <label class="form-label">Files per page</label>';
@@ -507,7 +556,7 @@ echo '        </div>';
 
 /* ---- Quota dropdown ---- */
 $qInt = (int)$quotaVal;
-if (!in_array($qInt, $QUOTA_CHOICES, true)) $qInt = 10000;
+if (!in_array($qInt, $QUOTA_CHOICES, true)) $qInt = (int)$DEFAULT_QUOTA_FILES;
 
 echo '        <div class="col-12 col-md-6">';
 echo '          <label class="form-label">Quota (max number of files)</label>';
@@ -527,7 +576,14 @@ echo '        </div>';
 
 echo '      </div>'; // row
 
-echo '      <button class="btn btn-primary w-100 mt-4" type="submit" ' . ($dirWritable ? '' : 'disabled') . '>' . h($btnLabel) . '</button>';
+if ($alreadyInstalled) {
+    echo '      <div class="d-grid gap-2 d-md-flex mt-4">';
+    echo '        <button class="btn btn-primary flex-md-fill" type="submit" ' . ($dirWritable ? '' : 'disabled') . '>' . h($btnLabel) . '</button>';
+    echo '        <a class="btn btn-secondary flex-md-fill" href="' . h($indexUrl) . '">Cancel</a>';
+    echo '      </div>';
+} else {
+    echo '      <button class="btn btn-primary w-100 mt-4" type="submit" ' . ($dirWritable ? '' : 'disabled') . '>' . h($btnLabel) . '</button>';
+}
 echo '    </form>';
 
 echo '    <hr class="my-4">';

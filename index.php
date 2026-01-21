@@ -54,8 +54,14 @@ $isAjax = mc_is_ajax();
 $state = mc_read_state();
 
 $APP_NAME = (string)($state['app_name'] ?? 'MiniCloudS');
-$APP_NAME = trim((string)preg_replace('~\s+~', ' ', $APP_NAME));
-if ($APP_NAME === '' || !preg_match('~^[A-Za-z](?:[A-Za-z ]{0,62}[A-Za-z])?$~', $APP_NAME)) {
+
+// Normalize Unicode whitespace (incl. NBSP) to single spaces, then trim
+$APP_NAME = preg_replace('~[\s\x{00A0}]+~u', ' ', $APP_NAME) ?: '';
+$APP_NAME = trim($APP_NAME);
+
+// Allow letters (any language) + spaces between words, length 3–20
+$re = '~^(?=.{3,20}$)\p{L}+(?: \p{L}+)*$~u';
+if ($APP_NAME === '' || !preg_match($re, $APP_NAME)) {
     $APP_NAME = 'MiniCloudS';
 }
 

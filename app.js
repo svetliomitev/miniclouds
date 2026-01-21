@@ -725,6 +725,8 @@
   }
 
   function applyStats(stats){
+    // applyStats() only decides HARD lock vs clear
+    // no "known/unknown drift" states are tracked client-side
     if (!stats) return;
 
     // Server keys: index_changed, index_changed_known, index_missing
@@ -732,8 +734,8 @@
     var must = (Number(stats.index_changed || stats.index_must_rebuild || 0) === 1);
     var forced = (Number(stats.index_forced || 0) === 1);
 
-    // If server explicitly forces rebuild, treat as hard lock + known drift
-    if (forced) { must = true; known = true; }
+    // If server explicitly forces rebuild, treat as hard lock.
+    if (forced) { must = true; }
 
     if (must) {
       HardLock.show();
@@ -1483,9 +1485,9 @@
         if (e.lengthComputable) setProgress(Math.round((e.loaded / e.total) * 100));
       };
 
-      function finishUpload(){
+      function finishUpload(needStats){
         UI.setBusy(false);
-        refreshStats();
+        if (needStats) refreshStats();
       }
 
       xhr.onload = function(){
@@ -1506,7 +1508,7 @@
           if (t.msg) Toast.show(t.kind, t.title, t.msg);
 
           if (data.stats) applyStats(data.stats);
-          else refreshStats();
+          else refreshStats(); // we already refreshed stats here
 
           clearInputs();
           readInputsIntoQuery();
@@ -1515,24 +1517,24 @@
           setProgress(100);
           setTimeout(resetProgress, 600);
 
-          runQuery(true).finally(finishUpload);
+          runQuery(true).finally(function(){ finishUpload(false); });
         } else {
           Toast.show('danger', 'Upload', 'Upload failed (server error).');
           setTimeout(resetProgress, 600);
-          finishUpload();
+          finishUpload(true);
         }
       };
 
       xhr.onerror = function(){
         Toast.show('danger', 'Upload', 'Upload failed (network error).');
         setTimeout(resetProgress, 600);
-        finishUpload();
+        finishUpload(true);
       };
 
       xhr.onabort = function(){
         Toast.show('warning', 'Upload', 'Upload aborted.');
         setTimeout(resetProgress, 600);
-        finishUpload();
+        finishUpload(true);
       };
 
       xhr.send(fd);
@@ -2012,8 +2014,8 @@
 
     var hasMoreBoot = (pageState.total > pageState.files.length);
     renderFiles(pageState.files, pageState.total, splitTerms(''), hasMoreBoot);
-
     ensureVisibleSharedUrls();
+
   }
 
   /* =========================
