@@ -284,6 +284,20 @@
     if (infoSize)  infoSize.textContent  = String(Totals.human || '');
   }
 
+  function applyTotalsUiPolicy(){
+    // Delete All availability should follow ALL uploads
+    UI.setDeleteAllHasFiles(Number(Totals.files || 0) > 0);
+
+    // Optional: keep the data attribute in sync (used by CSS / hints)
+    if (DOM.buttons.deleteAll) {
+      if (Number(Totals.files || 0) <= 0) DOM.buttons.deleteAll.setAttribute('data-mc-empty','1');
+      else DOM.buttons.deleteAll.removeAttribute('data-mc-empty');
+    }
+
+    // Keep info modal totals synced
+    syncInfoModalFromTotals();
+  }
+
   /* =========================
      MODALS (centralized + safe cleanup)
      ========================= */
@@ -293,12 +307,15 @@
       try { backs[i].parentNode.removeChild(backs[i]); } catch (e) {}
     }
 
-    var anyShown = document.querySelector('.modal.show');
-    if (!anyShown) {
-      document.body.classList.remove('modal-open');
-      try { document.body.style.removeProperty('overflow'); } catch (e2) {}
-      try { document.body.style.removeProperty('paddingRight'); } catch (e3) {}
-    }
+      var anyShown = document.querySelector('.modal.show');
+      if (!anyShown) {
+        // Do NOT touch inline styles (CSP purity / uniformity).
+        // Bootstrap will restore styles when it owns the modal lifecycle.
+        document.body.classList.remove('modal-open');
+
+        // Safety: if some leftover class remains (rare), remove it.
+        // (No inline style removal here.)
+      }
   }
 
   function modalShow(el){
@@ -327,30 +344,121 @@
   }
 
   /* =========================
-     HARD LOCK (index drift)
-     ========================= */
+   HARD LOCK (state machine)
+   Step 6 (clean cut)
+   - Owns: lock state + modal show/hide
+   - Exposes: syncFromStats(), isHard(), reason()
+   - No direct UI coupling; UI registers an onChange hook
+   ========================= */
   var HardLock = (function(){
-    var shown = false;
-    var hard = false;
+    var state = {
+      active: false,
+      reason: null,   // 'drift' | 'missing' | 'forced' | 'unknown'
+      source: null    // 'boot' | 'stats' | 'check' | 'action'
+    };
 
-    function show(){
-      if (shown) return;
+    var shown = false; // modal shown?
+
+    var onChange = null;
+
+    function notify(){
+      try { if (typeof onChange === 'function') onChange(getState()); } catch (e) {}
+    }
+
+    function getState(){
+      return {
+        active: !!state.active,
+        reason: state.reason,
+        source: state.source
+      };
+    }
+
+    function setOnChange(fn){
+      onChange = (typeof fn === 'function') ? fn : null;
+    }
+
+    function showModal(){
       if (!DOM.indexChangedModal) return;
+      if (shown) return;
       shown = true;
-      hard = true;
       modalShow(DOM.indexChangedModal);
     }
 
-    function clear(){
-      if (!hard && !shown) return;
-      hard = false;
+    function hideModal(){
+      if (!DOM.indexChangedModal) return;
+      if (!shown) return;
       shown = false;
       modalHide(DOM.indexChangedModal);
     }
 
-    function isHard(){ return !!hard; }
+    function activate(reason, source, opts){
+      opts = opts || {};
+      var wantShow = (opts.show !== false); // default: show
 
-    return { show: show, clear: clear, isHard: isHard };
+      state.active = true;
+      state.reason = String(reason || 'unknown');
+      state.source = String(source || 'unknown');
+
+      if (wantShow) showModal();
+      notify();
+    }
+
+    function clear(opts){
+      opts = opts || {};
+      var wantHide = (opts.hide !== false); // default: hide
+
+      state.active = false;
+      state.reason = null;
+      state.source = null;
+
+      if (wantHide) hideModal();
+      notify();
+    }
+
+    function deriveReasonFromStats(stats){
+      // prioritize explicit forced lock
+      if (Number(stats && stats.index_forced || 0) === 1) return 'forced';
+      if (Number(stats && stats.index_missing || 0) === 1) return 'missing';
+      if (Number(stats && (stats.index_changed || stats.index_must_rebuild) ? 1 : 0) === 1) return 'drift';
+      return null;
+    }
+
+    // single public entry for stats-driven lock decisions
+    function syncFromStats(stats, source, opts){
+      opts = opts || {};
+      var r = deriveReasonFromStats(stats);
+
+      if (r) {
+        activate(r, source || 'stats', opts);
+      } else {
+        // only clear if we were locked
+        if (state.active) clear(opts);
+      }
+    }
+
+    function isHard(){ return !!state.active; }
+    function reason(){ return state.reason; }
+    function source(){ return state.source; }
+
+    return {
+      // hooks
+      setOnChange: setOnChange,
+
+      // transitions
+      activate: activate,
+      clear: clear,
+      syncFromStats: syncFromStats,
+
+      // read
+      isHard: isHard,
+      reason: reason,
+      source: source,
+      getState: getState,
+
+      // modal-only (rare; used by CheckIndexFlow finish)
+      showModal: showModal,
+      hideModal: hideModal
+    };
   })();
 
   /* =========================
@@ -621,14 +729,105 @@
   })();
 
   /* =========================
-     UI POLICY (single source of truth)
-     ========================= */
+    OPERATION RUNNER (single owner)
+    Step 1: prevents duplicate inflight operations
+    - global ops: upload, rebuild, delete-all, etc.
+    - keyed ops: per filename (delete/share/unshare/download)
+    ========================= */
+  var Op = (function(){
+    var globalRunning = false;
+    var keyRunning = Object.create(null);
+
+    function runGlobal(fn){
+      if (globalRunning) return Promise.resolve(null);
+      globalRunning = true;
+
+      return Promise.resolve()
+        .then(function(){ return fn(); })
+        .finally(function(){ globalRunning = false; });
+    }
+
+    function runKey(key, fn){
+      key = String(key || '');
+      if (!key) return Promise.resolve(null);
+
+      if (keyRunning[key]) return Promise.resolve(null);
+      keyRunning[key] = 1;
+
+      return Promise.resolve()
+        .then(function(){ return fn(); })
+        .finally(function(){ delete keyRunning[key]; });
+    }
+
+    function isGlobal(){
+      return !!globalRunning;
+    }
+
+    function isKey(key){
+      key = String(key || '');
+      if (!key) return false;
+      return !!keyRunning[key];
+    }
+
+    return {
+      runGlobal: runGlobal,
+      runKey: runKey,
+      isGlobal: isGlobal,
+      isKey: isKey
+    };
+  })();
+
+  /* =========================
+    UI POLICY (single source of truth)
+    - Step 2: token/ref-count busy state
+    ========================= */
   var UI = (function(){
-    var busy = false;
+    // busy tokens
+    var busyCount = 0;
+    var nextTok = 1;
+    var busyTokLive = Object.create(null);
+
+    // legacy bridge (so old setBusy calls still behave predictably)
+    var legacyTok = 0;
+
     var deleteAllHasFiles = (Number(BOOT.totalFiles || 0) > 0);
+
+    function isBusy(){
+      return (busyCount > 0);
+    }
+
+    function busyAcquire(reason){
+      // reason is not used yet, but kept for debugging/future UI
+      var tok = nextTok++;
+      busyTokLive[tok] = 1;
+      busyCount++;
+      applyButtons();
+      applyGridPolicy();
+      return tok;
+    }
+
+    function busyRelease(tok){
+      tok = Number(tok || 0);
+      if (!tok) return;
+      if (!busyTokLive[tok]) return;
+
+      delete busyTokLive[tok];
+      busyCount = Math.max(0, busyCount - 1);
+      applyButtons();
+      applyGridPolicy();
+    }
+
+    function busyResetAll(){
+      busyTokLive = Object.create(null);
+      busyCount = 0;
+      legacyTok = 0;
+      applyButtons();
+      applyGridPolicy();
+    }
 
     function applyButtons(){
       var hard = HardLock.isHard();
+      var busy = isBusy();
 
       // Check Index is allowed even when hard-locked (but not when busy)
       setEnabled(DOM.buttons.checkIndex, !busy);
@@ -651,16 +850,26 @@
     function applyGridPolicy(){
       if (!DOM.grid) return;
       var hard = HardLock.isHard();
+      var busy = isBusy();
+
       var nodes = DOM.grid.querySelectorAll('button, input, select, textarea');
       for (var i = 0; i < nodes.length; i++) nodes[i].disabled = (busy || hard);
+
       // then re-apply row locks
       RowBusy.reapplyAll();
     }
 
+    // Legacy boolean API (kept for now)
     function setBusy(v){
-      busy = !!v;
-      applyButtons();
-      applyGridPolicy();
+      v = !!v;
+      if (v) {
+        if (!legacyTok) legacyTok = busyAcquire('legacy');
+      } else {
+        if (legacyTok) {
+          busyRelease(legacyTok);
+          legacyTok = 0;
+        }
+      }
     }
 
     function setDeleteAllHasFiles(v){
@@ -668,14 +877,161 @@
       applyButtons();
     }
 
-    function getBusy(){ return !!busy; }
+    function getBusy(){
+      return isBusy();
+    }
 
     return {
+      // Step 2 API
+      busyAcquire: busyAcquire,
+      busyRelease: busyRelease,
+      busyResetAll: busyResetAll,
+
+      // Existing API kept
       setBusy: setBusy,
       getBusy: getBusy,
       setDeleteAllHasFiles: setDeleteAllHasFiles,
       applyButtons: applyButtons,
       applyGridPolicy: applyGridPolicy
+    };
+  })();
+
+  // Step 6: UI reacts to HardLock transitions in one place
+  if (HardLock && HardLock.setOnChange) {
+    HardLock.setOnChange(function(){
+      try { UI.applyButtons(); } catch (e0) {}
+      try { UI.applyGridPolicy(); } catch (e1) {}
+    });
+  }
+
+  /* =========================
+    GUARDS (single owner)
+    Step 3: centralize "can I run?" checks
+    ========================= */
+  var Guard = (function(){
+
+    function hardLock(){
+      if (HardLock && HardLock.isHard && HardLock.isHard()) {
+        if (HardLock.showModal) HardLock.showModal();
+        return true;
+      }
+      return false;
+    }
+
+    function busy(){
+      if (UI && UI.getBusy && UI.getBusy()) {
+        Toast.show('info', 'Busy', 'Another operation is in progress. Please wait.');
+        return true;
+      }
+      return false;
+    }
+
+    function rowBusy(filename){
+      filename = String(filename || '');
+      if (!filename) return false;
+      if (RowBusy && RowBusy.isBusy && RowBusy.isBusy(filename)) {
+        Toast.show('info', 'Busy', 'This file is already being processed.');
+        return true;
+      }
+      return false;
+    }
+
+    // Generic guard: returns true if blocked
+    function blockIf(opts){
+      opts = opts || {};
+
+      // 1) busy first (keeps UX consistent)
+      if (opts.busy) {
+        if (busy()) return true;
+      }
+
+      // 2) hard-lock (unless explicitly allowed)
+      if (opts.hard && !opts.allowHard) {
+        if (hardLock()) return true;
+      }
+
+      // 3) per-row busy (optional)
+      if (opts.row) {
+        if (rowBusy(opts.row)) return true;
+      }
+
+      return false;
+    }
+
+    return {
+      hardLock: hardLock,
+      busy: busy,
+      rowBusy: rowBusy,
+      blockIf: blockIf
+    };
+  })();
+
+  /* =========================
+    NET (single owner)
+    Step 4: unified fetch + JSON parsing
+    ========================= */
+  var Net = (function(){
+    function withHeaders(h, add){
+      h = h || {};
+      add = add || {};
+      for (var k in add) {
+        if (Object.prototype.hasOwnProperty.call(add, k)) h[k] = add[k];
+      }
+      return h;
+    }
+
+    function parseJsonLoose(txt){
+      try { return JSON.parse(txt || ''); } catch (e) { return null; }
+    }
+
+    // Always returns: { ok, status, redirected, url, txt, data }
+    function requestText(url, opts){
+      opts = opts || {};
+      if (!opts.credentials) opts.credentials = 'same-origin';
+
+      return fetch(url, opts).then(function(res){
+        return res.text().then(function(txt){
+          var data = parseJsonLoose(txt);
+          return {
+            ok: !!res.ok,
+            status: Number(res.status || 0),
+            redirected: !!res.redirected,
+            url: String(res.url || ''),
+            txt: String(txt || ''),
+            data: data
+          };
+        });
+      });
+    }
+
+    function getJson(url, opts){
+      opts = opts || {};
+      opts.method = 'GET';
+      opts.headers = withHeaders(opts.headers, { 'Accept': 'application/json' });
+      return requestText(url, opts);
+    }
+
+    function postForm(url, formData, opts){
+      opts = opts || {};
+      opts.method = 'POST';
+      opts.body = formData;
+      opts.headers = withHeaders(opts.headers, {
+        'X-Requested-With': 'XMLHttpRequest',
+        'Accept': 'application/json'
+      });
+      return requestText(url, opts);
+    }
+
+    // App-level “ok” envelope (MiniCloudS style): { ok:true, ... }
+    function isAppOk(r){
+      return !!(r && r.ok && r.data && r.data.ok === true);
+    }
+
+    return {
+      requestText: requestText,
+      getJson: getJson,
+      postForm: postForm,
+      isAppOk: isAppOk
     };
   })();
 
@@ -706,13 +1062,53 @@
   var __mcListSilent = 0;
   var __mcListNoAbort = 0;
 
-  var __mcBaseHref = (function(){
-    try { return new URL('index.php', window.location.href).toString(); } catch (e) { return 'index.php'; }
+  /* =========================
+   ENDPOINTS (uniform, base-safe)
+   - NEVER call 'index.php' or 'link.php' by string literal in network code.
+   - Always use these resolved URLs.
+   ========================= */
+  var EP = (function(){
+    function baseDirUrl(){
+      // Stable directory base even when current URL is "/subdir" (no trailing slash)
+      // or "/subdir?check=1" etc.
+      try {
+        var origin = window.location.origin;
+        var p = String(window.location.pathname || '/');
+
+        var lastSeg = p.split('/').pop() || '';
+        var looksLikeFile = (lastSeg.indexOf('.') !== -1);
+
+        // if "/subdir" treat as directory => "/subdir/"
+        if (!p.endsWith('/') && !looksLikeFile) p = p + '/';
+
+        // if file path, strip filename
+        if (!p.endsWith('/')) p = p.replace(/\/[^\/]*$/, '/');
+
+        return origin + p;
+      } catch (e) {
+        return String(document.baseURI || window.location.href || '');
+      }
+    }
+
+    function abs(rel){
+      rel = String(rel || '');
+      if (!rel) return '';
+      try { return new URL(rel, baseDirUrl()).toString(); }
+      catch (e) { return rel; }
+    }
+
+    return {
+      index: abs('index.php'),
+      link:  abs('link.php')
+    };
   })();
   
   /* =========================
-    CHECK INDEX FLOW (single owner)
-    ========================= */
+  CHECK INDEX FLOW (single owner)
+  Step 7 (clean cut)
+  - Owns the URL flag detection + “checking…” toast + deterministic finish
+  - Does NOT decide drift itself (HardLock.syncFromStats already did that in applyStats)
+  ========================= */
   var CheckIndexFlow = (function(){
     var pending = false;
     var started = false;
@@ -746,6 +1142,7 @@
       Toast.priorityAction();
       Toast.show('warning', 'Check Index', 'Checking index state...', { ttl: 1200, noClose: true });
 
+      // one-shot URL cleanup so refresh / copy-paste URL is clean
       clearUrlFlag();
       return true;
     }
@@ -759,22 +1156,42 @@
       deferHard = true;
     }
 
+    // stats already applied (applyStats called before this)
+    // so we finish based on HardLock + deferHard deterministically
     function finishFromStats(stats){
       if (!started) return;
 
-      var forced = (Number(stats && stats.index_forced || 0) === 1);
-      var must   = (Number(stats && (stats.index_changed || stats.index_must_rebuild) || 0) === 1) || forced;
-
-      // Always close the "checking..." toast first (so modal appears after it auto-closed / is gone)
+      // Always close the “checking…” toast first
       Toast.hideMain();
 
-      if (must || deferHard) {
-        HardLock.show();
-        UI.setBusy(UI.getBusy()); // re-apply policy
+      var hard = (HardLock && HardLock.isHard) ? HardLock.isHard() : false;
+      var forced = (Number(stats && stats.index_forced || 0) === 1);
+
+      if (hard || forced || deferHard) {
+        // lock state already synced in applyStats(show:false during check)
+        // now we show the modal deterministically
+        if (HardLock && HardLock.showModal) HardLock.showModal();
       } else {
+        // ensure modal is NOT left open from a previous lock
+        if (HardLock && HardLock.clear) HardLock.clear({ hide:true });
         Toast.priorityAction();
         Toast.show('success', 'Check Index', 'Index is up to date.', { ttl: 1600 });
       }
+
+      // one-shot
+      pending = false;
+      started = false;
+      deferHard = false;
+    }
+
+    function fail(){
+      if (!started) return;
+
+      Toast.hideMain();
+
+      // Don’t change HardLock state here; server state is unknown.
+      Toast.priorityAction();
+      Toast.show('warning', 'Check Index', 'Could not check index state (network/server error).', { ttl: 2200 });
 
       // one-shot
       pending = false;
@@ -787,7 +1204,8 @@
       beginIfNeeded: beginIfNeeded,
       isChecking: isChecking,
       markDeferHard: markDeferHard,
-      finishFromStats: finishFromStats
+      finishFromStats: finishFromStats,
+      fail: fail
     };
   })();
 
@@ -824,28 +1242,20 @@
     // no "known/unknown drift" states are tracked client-side
     if (!stats) return;
 
-    // Server keys: index_changed, index_changed_known, index_missing
-    // Guard may also send: index_forced=1 (explicit hard-lock message)
-    var must = (Number(stats.index_changed || stats.index_must_rebuild || 0) === 1);
-    var forced = (Number(stats.index_forced || 0) === 1);
+    // Step 6: HardLock state machine owns the lock decision.
+    // During "Check Index" refresh: do not show modal here (toast must finish first).
+    var checking = (CheckIndexFlow && CheckIndexFlow.isChecking && CheckIndexFlow.isChecking());
+    if (checking) {
+      // update lock state but DO NOT show modal yet
+      HardLock.syncFromStats(stats, 'check', { show:false, hide:false });
 
-    // If server explicitly forces rebuild, treat as hard lock.
-    if (forced) { must = true; }
-
-    if (must) {
-      // During "Check Index" refresh: defer modal until the checking toast is closed
-      if (CheckIndexFlow && CheckIndexFlow.isChecking && CheckIndexFlow.isChecking()) {
-        if (CheckIndexFlow.markDeferHard) CheckIndexFlow.markDeferHard();
-        // IMPORTANT: do not show modal here
-      } else {
-        HardLock.show();
-        UI.setBusy(UI.getBusy()); // re-apply policy
+      // if lock is active, remember that we must show it after the checking toast
+      if (HardLock.isHard() && CheckIndexFlow && CheckIndexFlow.markDeferHard) {
+        CheckIndexFlow.markDeferHard();
       }
     } else {
-      if (HardLock.isHard()) {
-        HardLock.clear();
-        UI.setBusy(UI.getBusy());
-      }
+      // normal path: apply lock state and show/hide modal accordingly
+      HardLock.syncFromStats(stats, 'stats', { show:true, hide:true });
     }
 
     if (stats.total_human && DOM.footerTotal) DOM.footerTotal.textContent = String(stats.total_human);
@@ -854,35 +1264,118 @@
     if (stats.total_human) Totals.human = String(stats.total_human);
     Totals.files = Number(stats.total_files || 0);
 
-    // Delete All availability should follow ALL uploads
-    UI.setDeleteAllHasFiles(Totals.files > 0);
+    applyTotalsUiPolicy();
+  }
 
-    if (DOM.buttons.deleteAll) {
-      if (Totals.files <= 0) DOM.buttons.deleteAll.setAttribute('data-mc-empty','1');
-      else DOM.buttons.deleteAll.removeAttribute('data-mc-empty');
+  // Single “stats sync” policy:
+  // - If payload includes stats => applyStats(stats)
+  // - Else if payload itself looks like stats => applyStats(payload)
+  // - Else => refreshStats()
+  // Always returns a Promise.
+  function syncStatsFrom(payloadOrStats, opts){
+    opts = opts || {};
+    var forceRefresh = !!opts.forceRefresh;
+
+    if (!forceRefresh && payloadOrStats && typeof payloadOrStats === 'object') {
+      // common: { ok:true, stats:{...} }
+      if (payloadOrStats.stats && typeof payloadOrStats.stats === 'object') {
+        try { applyStats(payloadOrStats.stats); } catch (e0) {}
+        return Promise.resolve(payloadOrStats.stats);
+      }
+
+      // sometimes we pass stats directly
+      var looksLikeStats =
+        Object.prototype.hasOwnProperty.call(payloadOrStats, 'total_files') ||
+        Object.prototype.hasOwnProperty.call(payloadOrStats, 'total_human') ||
+        Object.prototype.hasOwnProperty.call(payloadOrStats, 'index_changed') ||
+        Object.prototype.hasOwnProperty.call(payloadOrStats, 'index_missing') ||
+        Object.prototype.hasOwnProperty.call(payloadOrStats, 'index_forced');
+
+      if (looksLikeStats) {
+        try { applyStats(payloadOrStats); } catch (e1) {}
+        return Promise.resolve(payloadOrStats);
+      }
     }
 
-    syncInfoModalFromTotals();
+    return refreshStats();
   }
 
   function refreshStats(){
-    return fetch('index.php?ajax=stats', {
-      credentials: 'same-origin',
-      headers: { 'Accept': 'application/json' }
-    })
-    .then(function(res){
-      return res.json().then(function(data){ return { ok: res.ok, data: data }; });
-    })
-    .then(function(r){
-      if (!r.ok || !r.data || r.data.ok !== true) return null;
-      applyStats(r.data);
-      if (CheckIndexFlow && CheckIndexFlow.finishFromStats) {
-        CheckIndexFlow.finishFromStats(r.data);
-      }
-      return r.data;
-    })
-    .catch(function(){ return null; });
+    var u;
+    try { u = new URL(EP.index); }
+    catch (e0) { u = null; }
+
+    var statsUrl = u ? (u.searchParams.set('ajax','stats'), u.toString())
+                     : (EP.index + '?ajax=stats');
+
+    return Net.getJson(statsUrl)
+      .then(function(r){
+        if (!Net.isAppOk(r)) {
+          if (CheckIndexFlow && CheckIndexFlow.isChecking && CheckIndexFlow.isChecking()) {
+            if (CheckIndexFlow.fail) CheckIndexFlow.fail();
+          }
+          return null;
+        }
+
+        syncStatsFrom(r.data);
+
+        // Only finish the "Check Index" flow if we are actually in that flow.
+        if (CheckIndexFlow && CheckIndexFlow.isChecking && CheckIndexFlow.isChecking()) {
+          if (CheckIndexFlow.finishFromStats) CheckIndexFlow.finishFromStats(r.data);
+        }
+
+        return r.data;
+      })
+      .catch(function(){
+        if (CheckIndexFlow && CheckIndexFlow.isChecking && CheckIndexFlow.isChecking()) {
+          if (CheckIndexFlow.fail) CheckIndexFlow.fail();
+        }
+        return null;
+      });
   }
+
+  /* =========================
+    RENDER LIFECYCLE (single owner)
+    Step 5: post-render policy + hydration
+    - Any function that mutates the file grid should call RenderLife.after()
+    - RenderLife runs once per tick (coalesced)
+    ========================= */
+  var RenderLife = (function(){
+    var scheduled = false;
+
+    function runOnce(){
+      scheduled = false;
+
+      // 1) Apply global disable/hardlock + then reapply row locks
+      try { UI.applyGridPolicy(); } catch (e0) {}
+
+      // 2) Hydrate any “shared but url missing” pills (best-effort)
+      try { ensureVisibleSharedUrls(); } catch (e1) {}
+
+      // 3) Keep info modal totals synced (cheap)
+      try { applyTotalsUiPolicy(); } catch (e2) {}
+    }
+
+    function after(){
+      if (scheduled) return;
+      scheduled = true;
+
+      // microtask if possible, fallback to macrotask
+      if (typeof Promise !== 'undefined' && Promise.resolve) {
+        Promise.resolve().then(runOnce);
+      } else {
+        setTimeout(runOnce, 0);
+      }
+    }
+
+    function now(){
+      // force immediate run (rare: first paint)
+      if (scheduled) scheduled = false;
+      runOnce();
+    }
+
+    return { after: after, now: now };
+  })();
 
   /* =========================
      RENDER
@@ -899,6 +1392,7 @@
       DOM.grid.innerHTML = '';
       if (DOM.showMoreWrap) DOM.showMoreWrap.classList.add('d-none');
       if (DOM.showMoreHint) DOM.showMoreHint.textContent = '';
+      RenderLife.after();
       return;
     }
 
@@ -974,11 +1468,6 @@
 
     DOM.grid.innerHTML = html.join('');
 
-    // re-apply policies after render (single owner)
-    UI.applyGridPolicy();
-
-    ensureVisibleSharedUrls();
-
     if (DOM.showMoreWrap && DOM.buttons.showMore && DOM.showMoreHint) {
       if (hasMore) {
         DOM.showMoreWrap.classList.remove('d-none');
@@ -987,8 +1476,8 @@
         DOM.showMoreWrap.classList.add('d-none');
         DOM.showMoreHint.textContent = '';
       }
-      UI.applyButtons();
     }
+    RenderLife.after();
   }
 
   /* =========================
@@ -1083,14 +1572,20 @@
     var reqAppend = append;
     var reqId = ++__mcListReqSeq;
 
+    // Abort previous in-flight list request unless we're in "no abort" mode
     if (!__mcListNoAbort) {
       if (__mcListAbortCtl) { try { __mcListAbortCtl.abort(); } catch (e0) {} }
+      __mcListAbortCtl = (window.AbortController ? new AbortController() : null);
+    } else {
+      __mcListAbortCtl = null;
     }
-    __mcListAbortCtl = (window.AbortController ? new AbortController() : null);
 
     var url;
-    try { url = new URL(__mcBaseHref); }
-    catch (e1) { url = new URL('index.php', window.location.href); }
+    try { url = new URL(EP.index); }
+    catch (e1) {
+      // ultimate fallback: still do not hardcode 'index.php' here
+      url = new URL(String(EP.index || ''), String(document.baseURI || window.location.href || ''));
+    }
 
     url.searchParams.set('ajax', 'list');
     url.searchParams.set('offset', String(offset));
@@ -1100,19 +1595,19 @@
     if (query.to) url.searchParams.set('to', query.to);
     url.searchParams.set('flags', query.flags || 'all');
 
-    return fetch(url.toString(), {
-      credentials: 'same-origin',
-      headers: { 'Accept': 'application/json' },
+    return Net.getJson(url.toString(), {
       signal: __mcListAbortCtl ? __mcListAbortCtl.signal : undefined
     })
-    .then(function(res){
-      return res.text().then(function(txt){
-        var data = null;
-        try { data = JSON.parse(txt || ''); } catch (e2) {}
-        return { ok: res.ok, status: res.status, data: data, reqId: reqId, raw: txt };
-      });
-    })
-    .then(function(r){
+    .then(function(r0){
+      // normalize to the old internal shape used below
+      var r = {
+        ok: r0.ok,
+        status: r0.status,
+        data: r0.data,
+        reqId: reqId,
+        raw: r0.txt
+      };
+
       if (r.reqId !== __mcListReqSeq) return { ignored: true };
 
       if (!r.ok || !r.data || r.data.ok !== true || !Array.isArray(r.data.files)) {
@@ -1314,25 +1809,6 @@
     return { kind:'info', title: opts.infoTitle || 'Info', msg: opts.infoMsg || '' };
   }
 
-  function postJson(url, fd){
-    return fetch(url, {
-      method: 'POST',
-      body: fd,
-      credentials: 'same-origin',
-      headers: {
-        'X-Requested-With': 'XMLHttpRequest',
-        'Accept': 'application/json'
-      }
-    })
-    .then(function(res){
-      return res.text().then(function(txt){
-        var data = null;
-        try { data = JSON.parse(txt || ''); } catch (e0) {}
-        return { ok: res.ok, status: res.status, redirected: !!res.redirected, url: res.url, txt: txt, data: data };
-      });
-    });
-  }
-
   /* =========================
      AJAX FORMS (.js-ajax)  (centralized flow)
      ========================= */
@@ -1351,15 +1827,18 @@
       var actionName = String(fdPeek.get('action') || '');
       var fileName = String(fdPeek.get('name') || '');
 
-      if (HardLock.isHard() && actionName !== 'rebuild_index') {
-        HardLock.show();
-        return;
+      // Guard: hard-lock blocks everything except rebuild_index
+      if (actionName !== 'rebuild_index') {
+        if (Guard.blockIf({ hard:true })) return;
       }
 
-      if (actionName === 'delete_one' && fileName && RowBusy.isBusy(fileName)) {
-        Toast.show('info', 'Busy', 'This file is already being processed.');
-        return;
+      // Guard: row-level busy (delete_one)
+      if (actionName === 'delete_one' && fileName) {
+        if (Guard.blockIf({ row:fileName })) return;
       }
+
+      // Guard: global busy blocks rebuild as well (rebuild sets busy token itself)
+      if (Guard.blockIf({ busy:true })) return;
 
       var msg = form.getAttribute('data-confirm');
       if (msg && String(msg).trim().length) {
@@ -1372,21 +1851,27 @@
       var isRebuild = (actionName === 'rebuild_index');
 
       // pre-action UI effects
+      var __busyTok = 0;
+
       if (isRebuild) {
         // rebuild progress: warning working toast (no close button, keep spacing)
         Toast.workingWarning('Rebuild progress', 'Rebuilding index now...');
-        UI.setBusy(true);
+        __busyTok = UI.busyAcquire('rebuild');
+
       } else if (actionName === 'delete_all') {
         // disable ONLY Delete All and show warning working toast
         setEnabled(DOM.buttons.deleteAll, false);
         Toast.workingWarning('Deleting all', 'Deleting all files...');
+
       } else if (actionName === 'delete_one' && fileName) {
         RowBusy.set(fileName, true);
       }
 
       // --- POST ---
       function doPost(){
-        return postJson(form.getAttribute('action') || 'index.php', fdPeek)
+        var postTo = String(form.getAttribute('action') || '').trim();
+        if (!postTo) postTo = EP.index;
+        return Net.postForm(postTo, fdPeek)
           .then(function(r){
             if (!r.data) {
               var preview = String(r.txt || '').trim();
@@ -1419,8 +1904,9 @@
               }
             }
 
-            if (r.data && r.data.stats) applyStats(r.data.stats);
-            else refreshStats();
+            // Uniform stats policy
+            // (do not double-update; syncStatsFrom decides)
+            syncStatsFrom(r.data);
 
             // delete_all is a reset
             if (actionName === 'delete_all') {
@@ -1441,11 +1927,8 @@
 
             // ALWAYS end rebuild busy-state on completion (success or error)
             if (isRebuild) {
-              try { UI.setBusy(false); } catch (e0) {}
-            }
-
-            if (actionName === 'delete_all') {
-              UI.applyButtons();
+              try { UI.busyRelease(__busyTok); } catch (e0) {}
+              __busyTok = 0;
             }
 
             if (actionName === 'delete_one' && fileName) {
@@ -1528,14 +2011,7 @@
       if (!window.XMLHttpRequest || !window.FormData) return;
       ev.preventDefault();
 
-      if (UI.getBusy()) {
-        Toast.show('info', 'Busy', 'Another operation is in progress. Please wait.');
-        return;
-      }
-      if (HardLock.isHard()) {
-        HardLock.show();
-        return;
-      }
+      if (Guard.blockIf({ busy:true, hard:true })) return;
 
       if (!input.files || input.files.length === 0) {
         Toast.show('warning', 'Upload', 'No files selected.');
@@ -1578,11 +2054,11 @@
 
       var fd = new FormData(form);
 
-      UI.setBusy(true);
+      var __uploadTok = UI.busyAcquire('upload');
       setProgress(0);
 
       var xhr = new XMLHttpRequest();
-      xhr.open('POST', 'index.php', true);
+      xhr.open('POST', EP.index, true);
       xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
 
       xhr.upload.onprogress = function(e){
@@ -1590,8 +2066,9 @@
       };
 
       function finishUpload(needStats){
-        UI.setBusy(false);
-        if (needStats) refreshStats();
+        UI.busyRelease(__uploadTok);
+        __uploadTok = 0;
+        if (needStats) syncStatsFrom(null, { forceRefresh:true });
       }
 
       xhr.onload = function(){
@@ -1611,8 +2088,8 @@
           });
           if (t.msg) Toast.show(t.kind, t.title, t.msg);
 
-          if (data.stats) applyStats(data.stats);
-          else refreshStats(); // we already refreshed stats here
+          // Uniform stats policy
+          syncStatsFrom(data);
 
           clearInputs();
           readInputsIntoQuery();
@@ -1656,17 +2133,11 @@
     fd.append('action', mode);
     fd.append('name', filename);
 
-    var res = await fetch('link.php', {
-      method: 'POST',
-      body: fd,
-      credentials: 'same-origin',
-      headers: { 'X-Requested-With': 'XMLHttpRequest' }
-    });
+    var r = await Net.postForm(EP.link, fd);
 
-    var data = null;
-    try { data = await res.json(); } catch(e) {}
+    var data = r.data;
 
-    if (!res.ok) {
+    if (!r.ok) {
       var msg = (data && data.error) ? data.error : 'Link failed';
       throw new Error(msg);
     }
@@ -1683,17 +2154,12 @@
     fd.append('action', 'unshare_one');
     fd.append('name', filename);
 
-    var res = await fetch('index.php', {
-      method: 'POST',
-      body: fd,
-      credentials: 'same-origin',
-      headers: { 'X-Requested-With': 'XMLHttpRequest', 'Accept': 'application/json' }
+    var r = await Net.postForm(EP.index, fd, {
+      headers: { 'Accept': 'application/json' }
     });
 
-    var data = null;
-    try { data = await res.json(); } catch(e) {}
-    if (!res.ok || !data) throw new Error('Unshare failed');
-    return data;
+    if (!r.ok || !r.data) throw new Error('Unshare failed');
+    return r.data;
   }
 
   function patchVisibleCard(filename, isShared, url){
@@ -1742,7 +2208,7 @@
     var shareBtn = wrapper.querySelector('[data-share-btn]');
     if (shareBtn) shareBtn.textContent = isShared ? 'Unshare' : 'Share';
 
-    UI.applyGridPolicy();
+    RenderLife.after();
   }
 
   function ensureUrlForFile(filename){
@@ -1777,6 +2243,11 @@
 
   function ensureVisibleSharedUrls(){
     if (!DOM.grid) return;
+
+    // During Check Index refresh or when hard-locked, do not hydrate URLs.
+    if (CheckIndexFlow && CheckIndexFlow.isChecking && CheckIndexFlow.isChecking()) return;
+    if (HardLock && HardLock.isHard && HardLock.isHard()) return;
+
     var nodes = DOM.grid.querySelectorAll('.file-card[data-shared="1"]');
     for (var i = 0; i < nodes.length; i++) {
       var card = nodes[i];
@@ -1793,16 +2264,13 @@
   }
 
   async function onLinkPillClick(pill){
-    if (HardLock.isHard()) { HardLock.show(); return; }
+    if (Guard.blockIf({ hard:true })) return;
 
     var key = String(pill.getAttribute('data-f') || '');
     var fn = decName(key);
     if (!fn) return;
 
-    if (RowBusy.isBusy(fn)) {
-      Toast.show('info', 'Busy', 'This file is already being processed.');
-      return;
-    }
+    if (Guard.blockIf({ row: fn })) return;
 
     var f = null;
     for (var i = 0; i < pageState.files.length; i++) {
@@ -1831,8 +2299,7 @@
     file = String(file || '');
     if (!file) return;
 
-    if (RowBusy.isBusy(file)) { Toast.show('info', 'Busy', 'This file is already being processed.'); return; }
-    if (HardLock.isHard()) { HardLock.show(); return; }
+    if (Guard.blockIf({ hard:true, row:file })) return;
 
     Toast.priorityAction();
 
@@ -1885,8 +2352,8 @@
       });
       if (t.msg) Toast.show(t.kind, t.title, t.msg);
 
-      if (resp && resp.stats) applyStats(resp.stats);
-      else refreshStats();
+      // Uniform stats policy
+      syncStatsFrom(resp);
 
       readInputsIntoQuery();
       await refreshToDesiredCount('Index', 'Could not refresh list (network/server error).');
@@ -1901,8 +2368,7 @@
     file = String(file || '');
     if (!file) return;
 
-    if (RowBusy.isBusy(file)) { Toast.show('info', 'Busy', 'This file is already being processed.'); return; }
-    if (HardLock.isHard()) { HardLock.show(); return; }
+    if (Guard.blockIf({ hard:true, row:file })) return;
 
     Toast.priorityAction();
 
@@ -2031,7 +2497,7 @@
     }
 
     var onType = debounce(function(){
-      if (HardLock.isHard()) return;
+      if (Guard.blockIf({ hard:true })) return;
       Toast.noteUserQuery();
       readInputsIntoQuery();
       runQuery(true);
@@ -2041,7 +2507,7 @@
 
     if (DOM.search.from) {
       L.on(DOM.search.from, 'change', function(){
-        if (HardLock.isHard()) return;
+        if (Guard.blockIf({ hard:true })) return;
         Toast.noteUserQuery();
         readInputsIntoQuery();
         runQuery(true);
@@ -2050,7 +2516,7 @@
 
     if (DOM.search.to) {
       L.on(DOM.search.to, 'change', function(){
-        if (HardLock.isHard()) return;
+        if (Guard.blockIf({ hard:true })) return;
         Toast.noteUserQuery();
         readInputsIntoQuery();
         runQuery(true);
@@ -2062,7 +2528,7 @@
       if (!(t instanceof Element)) return;
       var item = t.closest('[data-flag]');
       if (!item) return;
-      if (HardLock.isHard()) return;
+      if (Guard.blockIf({ hard:true })) return;
       var v = String(item.getAttribute('data-flag') || 'all');
       Toast.noteUserQuery();
       setFlagsUI(v, false);
@@ -2070,7 +2536,7 @@
 
     if (DOM.buttons.searchClear) {
       L.on(DOM.buttons.searchClear, 'click', function(){
-        if (HardLock.isHard()) return;
+        if (Guard.blockIf({ hard:true })) return;
 
         var hadFilter =
           ((DOM.search.q && String(DOM.search.q.value || '').trim()) ||
@@ -2098,7 +2564,7 @@
 
     if (DOM.buttons.showMore) {
       L.on(DOM.buttons.showMore, 'click', function(){
-        if (HardLock.isHard()) return;
+        if (Guard.blockIf({ hard:true })) return;
 
         // Disable ONLY Show More while loading
         setEnabled(DOM.buttons.showMore, false);
@@ -2106,9 +2572,9 @@
         var nextOffset = Number(pageState.offset || 0);
 
         fetchListSafe(nextOffset, true, 'Index', 'Could not load more items.')
-          .finally(function(){
-            UI.applyButtons(); // restores showMore depending on policy/hasMore rendering
-          });
+        .finally(function(){
+          RenderLife.after();
+        });
       });
     }
 
@@ -2143,7 +2609,7 @@
     CheckIndexFlow.beginIfNeeded();
 
     // First-paint stats application (same path as ajax=stats)
-    applyStats({
+    syncStatsFrom({
       index_changed: Number(BOOT.index_changed || 0),
       index_changed_known: Number(BOOT.index_changed_known || 0),
       index_missing: Number(BOOT.index_missing || 0),
@@ -2155,14 +2621,13 @@
       )
     });
 
-    UI.setDeleteAllHasFiles(Totals.files > 0);
-    UI.setBusy(false);
+    UI.busyResetAll();
 
     updateCounts(pageState.files.length, pageState.total);
 
     var hasMoreBoot = (pageState.total > pageState.files.length);
     renderFiles(pageState.files, pageState.total, splitTerms(''), hasMoreBoot);
-    ensureVisibleSharedUrls();
+    RenderLife.now();
 
   }
 
