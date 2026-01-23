@@ -120,6 +120,8 @@ $flags = mc_index_flags($CACHE_DIR, $UPLOAD_DIR);
 $fileIndexMissing  = $flags['missing'];
 $indexDriftKnown   = $flags['known'];
 $indexNeedsRebuild = $flags['must'];
+$indexMustRebuild = (bool)$indexNeedsRebuild;
+$indexForced = false;
 
 /* JSON stats endpoint */
 if ($_SERVER['REQUEST_METHOD'] === 'GET' && (string)($_GET['ajax'] ?? '') === 'stats') {
@@ -138,6 +140,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && (string)($_GET['ajax'] ?? '') === 's
 
         // drift/missing index detection (UI will block actions)
         'index_changed' => ($flagsS['must'] ? 1 : 0),
+        'index_must_rebuild' => ($flagsS['must'] ? 1 : 0),
         'index_changed_known' => ($flagsS['known'] ? 1 : 0),
         'index_missing' => ($flagsS['missing'] ? 1 : 0),
         'index_forced' => 0,
@@ -225,7 +228,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // HARD GUARD: never mutate when index/baseline is unsafe.
     $guardFlags = mc_index_flags($CACHE_DIR, $UPLOAD_DIR);
 
-    if ($guardFlags['must'] && $action !== 'rebuild_index') {
+    if ($guardFlags['must'] && $action !== 'rebuild_index' && $action !== 'storage_scan') {
         $ok = [];
         $err = ['Index changed or baseline missing. Please use Rebuild Index first.'];
         $redirectTo = '';
@@ -242,6 +245,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'stats' => [
                   // IMPORTANT: use these exact keys (match app.js applyStats)
                   'index_changed' => 1,
+                  'index_must_rebuild' => 1,
                   'index_changed_known' => ($guardFlags['known'] ? 1 : 0),
                   'index_missing' => ($guardFlags['missing'] ? 1 : 0),
                   'index_forced' => 1,
@@ -436,6 +440,211 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($lFail > 0) $err[] = 'Failed to remove ' . $lFail . ' shared record(s).';
         }
     }
+    elseif ($action === 'storage_scan') {
+        // Admin tool: scan biggest files (AJAX only)
+        if (!$isAjax) {
+            $err[] = 'Storage scan is available only via AJAX.';
+        } else {
+            // Load fresh index for scan (reflect latest disk/index state)
+            $idxNow = file_index_load($CACHE_DIR);
+
+            $limit = (int)($_POST['limit'] ?? 200);
+            if ($limit < 10) $limit = 10;
+            if ($limit > 500) $limit = 500;
+
+            // Build "is shared" fast when possible
+            $useSharedSetScan = ($sharedComplete && is_array($sharedSet)) ? $sharedSet : null;
+
+            // Sort by size desc (index already has size/mtime)
+            $rows = array_values($idxNow);
+            usort($rows, function($a, $b){
+                $sa = (int)($a['size'] ?? 0);
+                $sb = (int)($b['size'] ?? 0);
+                if ($sa === $sb) return 0;
+                return ($sa > $sb) ? -1 : 1;
+            });
+
+            $items = [];
+            $n = min($limit, count($rows));
+
+            for ($i = 0; $i < $n; $i++) {
+                $r = $rows[$i];
+                $nm = (string)($r['name'] ?? '');
+                if ($nm === '') continue;
+
+                $isShared = false;
+                if (is_array($useSharedSetScan)) {
+                    // shared set is keyed by sha256(filename) (shared_index_has handles it)
+                    $isShared = shared_index_has($useSharedSetScan, $nm);
+                } else {
+                    // fallback to disk byname check
+                    $isShared = is_shared_file($BY_DIR, $nm);
+                }
+
+                $items[] = [
+                    'name'   => $nm,
+                    'size'   => (int)($r['size'] ?? 0),
+                    'mtime'  => (int)($r['mtime'] ?? 0),
+                    'shared' => $isShared ? 1 : 0,
+                ];
+            }
+
+            $ok[] = 'Storage scan completed.';
+            $flagsNow = mc_index_flags($CACHE_DIR, $UPLOAD_DIR);
+            $totalBytes = mc_index_total_bytes($idxNow);
+
+            header('Content-Type: application/json; charset=utf-8');
+            header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+
+            echo json_encode([
+                'ok' => $ok,
+                'err' => $err,
+                'redirect' => '',
+                'data' => [
+                    'items' => $items,
+                ],
+                'stats' => [
+                    'index_changed' => ($flagsNow['must'] ? 1 : 0),
+                    'index_must_rebuild' => ($flagsNow['must'] ? 1 : 0),
+                    'index_changed_known' => ($flagsNow['known'] ? 1 : 0),
+                    'index_missing' => ($flagsNow['missing'] ? 1 : 0),
+                    'index_forced' => 0,
+
+                    'total_files' => count($idxNow),
+                    'total_bytes' => $totalBytes,
+                    'total_human' => format_bytes($totalBytes),
+                ],
+            ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+            exit;
+        }
+    }
+    elseif ($action === 'storage_delete') {
+        // Admin tool: delete selected (AJAX only)
+        if (!$isAjax) {
+            $err[] = 'Storage delete is available only via AJAX.';
+        } else {
+            $names = $_POST['names'] ?? [];
+            if (!is_array($names)) $names = [];
+
+            $deleted = 0;
+            $failed = 0;
+
+            foreach ($names as $raw) {
+                $name = safe_basename((string)$raw);
+                if ($name === '' || (isset($name[0]) && $name[0] === '.')) {
+                    $failed++;
+                    $err[] = 'Invalid filename.';
+                    continue;
+                }
+
+                $path = $UPLOAD_DIR . '/' . $name;
+                if (!is_file($path)) {
+                    $failed++;
+                    $err[] = 'File not found: ' . $name;
+                    continue;
+                }
+
+                $wasSharedBefore = is_shared_file($BY_DIR, $name);
+
+                if (@unlink($path)) {
+                    $deleted++;
+                    $ok[] = 'Deleted: ' . $name;
+
+                    $fileIndex = file_index_remove_name($fileIndex, $name);
+                    $indexChanged = true;
+                    $uploadsChanged = true;
+
+                    [$ldel, $lfail] = delete_links_for_filename($LINK_DIR, $BY_DIR, $name);
+
+                    if ($wasSharedBefore && is_array($sharedSet)) {
+                        shared_index_remove($sharedSet, $name);
+                        $sharedChanged = true;
+                    }
+
+                    if ($ldel > 0 || $wasSharedBefore) $ok[] = 'Removed shared record(s) for: ' . $name;
+                    if ($lfail > 0) $err[] = 'Failed to remove ' . $lfail . ' shared record(s) for: ' . $name;
+
+                } else {
+                    $failed++;
+                    $err[] = 'Failed to delete: ' . $name;
+                }
+            }
+
+            // If anything failed, DO NOT refresh baseline (force drift rebuild if needed)
+            if ($failed > 0) $uploadsChanged = false;
+
+            // Persist changes BEFORE we re-load for the returned list
+            if ($uploadsChanged) {
+                $fp = mc_uploads_signature_compute($UPLOAD_DIR);
+                if ($fp) mc_uploads_fingerprint_save($CACHE_DIR, $fp);
+            }
+
+            if ($indexChanged) file_index_save($CACHE_DIR, $fileIndex);
+            if ($sharedChanged) {
+                shared_index_save($CACHE_DIR, is_array($sharedSet) ? $sharedSet : [], $sharedComplete);
+            }
+
+            // Return the updated scan list (now consistent)
+            $idxNow = file_index_load($CACHE_DIR);
+            $useSharedSetScan = ($sharedComplete && is_array($sharedSet)) ? $sharedSet : null;
+
+            $rows = array_values($idxNow);
+            usort($rows, function($a, $b){
+                $sa = (int)($a['size'] ?? 0);
+                $sb = (int)($b['size'] ?? 0);
+                if ($sa === $sb) return 0;
+                return ($sa > $sb) ? -1 : 1;
+            });
+
+            $items = [];
+            $n = min(200, count($rows));
+            for ($i = 0; $i < $n; $i++) {
+                $r = $rows[$i];
+                $nm = (string)($r['name'] ?? '');
+                if ($nm === '') continue;
+
+                $isShared = false;
+                if (is_array($useSharedSetScan)) $isShared = shared_index_has($useSharedSetScan, $nm);
+                else $isShared = is_shared_file($BY_DIR, $nm);
+
+                $items[] = [
+                    'name'   => $nm,
+                    'size'   => (int)($r['size'] ?? 0),
+                    'mtime'  => (int)($r['mtime'] ?? 0),
+                    'shared' => $isShared ? 1 : 0,
+                ];
+            }
+
+            $afterFlags = mc_index_flags($CACHE_DIR, $UPLOAD_DIR);
+            $totalBytes = mc_index_total_bytes($fileIndex);
+
+            header('Content-Type: application/json; charset=utf-8');
+            header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+
+            echo json_encode([
+                'ok' => $ok,
+                'err' => $err,
+                'redirect' => '',
+                'data' => [
+                    'items' => $items,
+                    'deleted' => $deleted,
+                    'failed' => $failed,
+                ],
+                'stats' => [
+                    'index_changed' => ($afterFlags['must'] ? 1 : 0),
+                    'index_must_rebuild' => ($afterFlags['must'] ? 1 : 0),
+                    'index_changed_known' => ($afterFlags['known'] ? 1 : 0),
+                    'index_missing' => ($afterFlags['missing'] ? 1 : 0),
+                    'index_forced' => 0,
+
+                    'total_files' => count($fileIndex),
+                    'total_bytes' => $totalBytes,
+                    'total_human' => format_bytes($totalBytes),
+                ],
+            ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+            exit;
+        }
+    }
     elseif ($action === 'unshare_one') {
         $name = safe_basename((string)($_POST['name'] ?? ''));
         if ($name === '' || (isset($name[0]) && $name[0] === '.')) {
@@ -468,43 +677,43 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
     elseif ($action === 'rebuild_index') {
-    // Rebuild BOTH file index + shared index + baseline fingerprint.
-    // This is the ONLY place where rebuild is allowed.
-    // (AJAX only in practice, but we keep it safe for non-AJAX too.)
+        // Rebuild BOTH file index + shared index + baseline fingerprint.
+        // This is the ONLY place where rebuild is allowed.
+        // (AJAX only in practice, but we keep it safe for non-AJAX too.)
 
-    // Step 1: rebuild file index from disk
-    $rebuilt = file_index_rebuild_from_disk($UPLOAD_DIR);
-    file_index_save($CACHE_DIR, $rebuilt);
-    $fileIndex = $rebuilt;
-    $indexChanged = false; // already saved explicitly
+        // Step 1: rebuild file index from disk
+        $rebuilt = file_index_rebuild_from_disk($UPLOAD_DIR);
+        file_index_save($CACHE_DIR, $rebuilt);
+        $fileIndex = $rebuilt;
+        $indexChanged = false; // already saved explicitly
 
-    // Step 2: rebuild shared set from disk (byname/*.txt + links/*.json validation)
-    $rebuiltShared = shared_index_rebuild_from_disk($LINK_DIR, $BY_DIR, $UPLOAD_DIR);
-    $sharedSet = $rebuiltShared;
-    $sharedComplete = (is_dir($BY_DIR) && is_readable($BY_DIR));
-    shared_index_save($CACHE_DIR, $sharedSet, $sharedComplete);
-    $sharedChanged = true;
+        // Step 2: rebuild shared set from disk (byname/*.txt + links/*.json validation)
+        $rebuiltShared = shared_index_rebuild_from_disk($LINK_DIR, $BY_DIR, $UPLOAD_DIR);
+        $sharedSet = $rebuiltShared;
+        $sharedComplete = (is_dir($BY_DIR) && is_readable($BY_DIR));
+        shared_index_save($CACHE_DIR, $sharedSet, $sharedComplete);
+        $sharedChanged = true;
 
-    // Step 3: write baseline uploads fingerprint (v2) + strong sha (optional)
-    $fp = mc_uploads_signature_compute($UPLOAD_DIR);
-    if ($fp) {
-        $strong = mc_uploads_strong_sha256_compute($UPLOAD_DIR);
-        if ($strong !== '') $fp['strong_sha256'] = $strong;
-        mc_uploads_fingerprint_save($CACHE_DIR, $fp);
-    }
-    
-    $ok[] = 'Index rebuild completed.';
-    $ok[] = 'Files indexed: ' . count($fileIndex) . '. Shared records: ' . count($sharedSet) . '.';
+        // Step 3: write baseline uploads fingerprint (v2) + strong sha (optional)
+        $fp = mc_uploads_signature_compute($UPLOAD_DIR);
+        if ($fp) {
+            $strong = mc_uploads_strong_sha256_compute($UPLOAD_DIR);
+            if ($strong !== '') $fp['strong_sha256'] = $strong;
+            mc_uploads_fingerprint_save($CACHE_DIR, $fp);
+        }
+        
+        $ok[] = 'Index rebuild completed.';
+        $ok[] = 'Files indexed: ' . count($fileIndex) . '. Shared records: ' . count($sharedSet) . '.';
     }
     elseif ($action === 'reinstall') {
-    // Reinstall is now a RECONFIGURE entry point:
-    // - Do NOT delete install_state.json
-    // - Keep .htaccess in place (it's what protects install.php / index.php)
-    // - Just redirect to install.php (which is protected by admin session)
+        // Reinstall is now a RECONFIGURE entry point:
+        // - Do NOT delete install_state.json
+        // - Keep .htaccess in place (it's what protects install.php / index.php)
+        // - Just redirect to install.php (which is protected by admin session)
 
-    $ok[] = 'Reconfigure: redirecting to installer…';
-    $base = mc_base_uri();
-    $redirectTo = ($base === '' ? '' : $base) . '/install.php';
+        $ok[] = 'Reconfigure: redirecting to installer…';
+        $base = mc_base_uri();
+        $redirectTo = ($base === '' ? '' : $base) . '/install.php';
     }
     else {
         $err[] = 'Unknown action.';
@@ -537,8 +746,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'redirect' => $redirectTo,
             'stats' => [
               'index_changed' => ($afterFlags['must'] ? 1 : 0),
+              'index_must_rebuild' => ($afterFlags['must'] ? 1 : 0),
               'index_changed_known' => ($afterFlags['known'] ? 1 : 0),
               'index_missing' => ($afterFlags['missing'] ? 1 : 0),
+              'index_forced' => 0,
 
               'total_files' => count($fileIndex),
               'total_bytes' => $totalBytes,
@@ -680,9 +891,9 @@ $totalHuman = format_bytes($totalBytes);
 
           <div id="mcAdminActions" class="collapse d-md-block">
             <div class="row g-2">
-              <div class="col-12 col-md-4">
+              <div class="col-12 col-md-3">
                 <!-- Check Index = refresh page to detect drift -->
-                <button class="btn btn-outline-info w-100"
+                <button class="btn btn-outline-light w-100"
                         type="button"
                         id="checkIndexBtn"
                         title="Refresh page to check for uploads drift (outer changes via SSH/FTP)."
@@ -698,12 +909,12 @@ $totalHuman = format_bytes($totalBytes);
                 </form>
               </div>
 
-              <div class="col-12 col-md-4">
+              <div class="col-12 col-md-3">
                 <form method="post" class="js-ajax" id="reinstallForm"
                       data-confirm="<?=h('Reconfigure ' . $APP_NAME . '? This will open the installer to update settings (password can be left blank to keep current one). All uploaded files and shared links will be retained.')?>">
                   <input type="hidden" name="csrf" value="<?=h($_SESSION['csrf'])?>">
                   <input type="hidden" name="action" value="reinstall">
-                  <button class="btn btn-outline-warning w-100"
+                  <button class="btn btn-outline-primary w-100"
                           type="submit"
                           id="reinstallBtn"
                           title="Opens the installer to update settings. Uploads are preserved."
@@ -713,7 +924,19 @@ $totalHuman = format_bytes($totalBytes);
                 </form>
               </div>
 
-              <div class="col-12 col-md-4">
+              <div class="col-12 col-md-3">
+                <button
+                  class="btn btn-outline-warning w-100"
+                  type="button"
+                  id="storageControlBtn"
+                  title="Scan biggest files and delete selected ones."
+                  aria-label="Scan biggest files and delete selected ones."
+                >
+                  Storage Control
+                </button>
+              </div>
+
+              <div class="col-12 col-md-3">
                 <form method="post" class="js-ajax" id="deleteAllForm" data-confirm="Delete ALL uploaded files and ALL shared links, also clear file index and share index? This cannot be undone.">
                   <input type="hidden" name="csrf" value="<?=h($_SESSION['csrf'])?>">
                   <input type="hidden" name="action" value="delete_all">
@@ -946,7 +1169,7 @@ $totalHuman = format_bytes($totalBytes);
 <!-- INFORMATION MESSAGE BOX -->
 <div class="modal fade" id="mcInfoModal" tabindex="-1"
      aria-labelledby="mcInfoModalLabel" aria-hidden="true">
-  <div class="modal-dialog modal-dialog-centered modal-lg">
+  <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable modal-lg">
     <div class="modal-content">
 
       <div class="modal-header">
@@ -1089,6 +1312,61 @@ $totalHuman = format_bytes($totalBytes);
   </div>
 </div>
 
+<!-- STORAGE CONTROL (admin) -->
+<div class="modal fade" id="mcStorageModal" tabindex="-1"
+     aria-labelledby="mcStorageModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-lg">
+    <div class="modal-content">
+
+      <div class="modal-header">
+        <h5 class="modal-title" id="mcStorageModalLabel">Storage Control</h5>
+        <button type="button" class="btn-close"
+                data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+
+      <div class="modal-body">
+
+        <div class="row g-2 mb-3 align-items-center">
+          <!-- Buttons row -->
+          <div class="col-6 col-sm-auto">
+            <button type="button"
+                    class="btn btn-outline-info w-100"
+                    id="mcStorageScanBtn">
+              Scan biggest files
+            </button>
+          </div>
+
+          <div class="col-6 col-sm-auto">
+            <button type="button"
+                    class="btn btn-outline-danger w-100"
+                    id="mcStorageDeleteBtn"
+                    disabled aria-disabled="true">
+              Delete selected
+            </button>
+          </div>
+
+          <!-- Summary row -->
+          <div class="col-12 col-sm ms-sm-auto">
+            <div class="small text-body-secondary text-sm-end">
+              <span id="mcStorageSummary">No data.</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="progress mb-3 d-none" id="mcStorageProgressWrap" role="progressbar" aria-label="Storage tool progress">
+          <div class="progress-bar mc-w-0" id="mcStorageProgressBar">0%</div>
+        </div>
+
+        <div id="mcStorageList" class="mc-storage-list">
+          <!-- JS renders rows here -->
+        </div>
+
+      </div>
+
+    </div>
+  </div>
+</div>
+
 <button type="button" class="btn btn-primary back-to-top" id="backToTop" aria-label="Back to top" title="Back to top">↑</button>
 <iframe id="mcDownloadFrame" aria-hidden="true"></iframe>
 
@@ -1109,6 +1387,8 @@ $totalHuman = format_bytes($totalBytes);
     'index_changed'       => ($indexNeedsRebuild ? 1 : 0),
     'index_missing'       => ($fileIndexMissing ? 1 : 0),
     'index_changed_known' => ($indexDriftKnown ? 1 : 0),
+    'index_must_rebuild'  => ($indexMustRebuild ? 1 : 0),
+    'index_forced'        => ($indexForced ? 1 : 0),
   ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
 ?></script>
 

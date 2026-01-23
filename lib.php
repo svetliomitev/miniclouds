@@ -849,13 +849,28 @@ function shared_index_load(string $cacheDir): array {
         return ['v' => 2, 'set' => [], 'complete' => false];
     }
 
-    $set = $j['set'] ?? [];
-    if (!is_array($set)) $set = [];
+    $set = shared_index_norm_set($j['set'] ?? []);
 
     $complete = (bool)($j['complete'] ?? false);
 
     mc_apcu_set($k, ['mt' => $mt, 'set' => $set, 'complete' => $complete], 0);
     return ['v' => 2, 'set' => $set, 'complete' => $complete];
+}
+
+function shared_index_norm_set($set): array {
+    if (!is_array($set)) return [];
+
+    $out = [];
+    foreach ($set as $k => $v) {
+        $k = (string)$k;
+        if ($k === '') continue;
+
+        // accept canonical sha256 keys only
+        if (preg_match('~^[a-f0-9]{64}$~i', $k)) {
+            $out[strtolower($k)] = 1;
+        }
+    }
+    return $out;
 }
 
 function shared_index_save(string $cacheDir, array $set, bool $complete = true): void {
@@ -880,10 +895,15 @@ function shared_index_save(string $cacheDir, array $set, bool $complete = true):
 }
 
 function shared_index_has(array $set, string $filename): bool {
-    $h = hash('sha256', $filename);
-    return isset($set[$h]);
-}
+    if ($filename === '') return false;
 
+    // v2 canonical: sha256(filename) => 1
+    $h = hash('sha256', $filename);
+    if (isset($set[$h])) return true;
+
+    // defensive fallback: if set ever contains raw filenames
+    return isset($set[$filename]);
+}
 function shared_index_add(array &$set, string $filename): void {
     $h = hash('sha256', $filename);
     $set[$h] = 1;

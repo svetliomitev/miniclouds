@@ -129,7 +129,8 @@
       uploadBtn: document.getElementById('uploadBtn'),
       showMore: document.getElementById('showMoreBtn'),
       searchClear: document.getElementById('searchClear'),
-      flagsDropdownBtn: document.getElementById('flagsDropdownBtn')
+      flagsDropdownBtn: document.getElementById('flagsDropdownBtn'),
+      storageControl: document.getElementById('storageControlBtn')
     },
 
     upload: {
@@ -154,7 +155,15 @@
     infoModal: document.getElementById('mcInfoModal'),
 
     indexChangedModal: document.getElementById('mcIndexChangedModal'),
-    indexRebuildNowBtn: document.getElementById('mcRebuildIndexNowBtn')
+    indexRebuildNowBtn: document.getElementById('mcRebuildIndexNowBtn'),
+
+    storageModal: document.getElementById('mcStorageModal'),
+    storageScanBtn: document.getElementById('mcStorageScanBtn'),
+    storageDeleteBtn: document.getElementById('mcStorageDeleteBtn'),
+    storageList: document.getElementById('mcStorageList'),
+    storageSummary: document.getElementById('mcStorageSummary'),
+    storageProgressWrap: document.getElementById('mcStorageProgressWrap'),
+    storageProgressBar: document.getElementById('mcStorageProgressBar')
   };
 
   /* =========================
@@ -302,20 +311,62 @@
      MODALS (centralized + safe cleanup)
      ========================= */
   function mcModalCleanup(){
+    // How many modals are currently shown?
+    var shown = document.querySelectorAll('.modal.show');
+    var shownCount = shown ? shown.length : 0;
+
+    // All backdrops currently in DOM
     var backs = document.querySelectorAll('.modal-backdrop');
-    for (var i = 0; i < backs.length; i++){
-      try { backs[i].parentNode.removeChild(backs[i]); } catch (e) {}
+    var backCount = backs ? backs.length : 0;
+
+    if (shownCount <= 0) {
+      // No modal visible => remove ALL backdrops + clear modal-open
+      for (var i = backCount - 1; i >= 0; i--){
+        try { backs[i].parentNode.removeChild(backs[i]); } catch (e0) {}
+      }
+      document.body.classList.remove('modal-open');
+      return;
     }
 
-      var anyShown = document.querySelector('.modal.show');
-      if (!anyShown) {
-        // Do NOT touch inline styles (CSP purity / uniformity).
-        // Bootstrap will restore styles when it owns the modal lifecycle.
-        document.body.classList.remove('modal-open');
+    function preemptOtherModals(exceptEl){
+      // Hide any currently shown modal except `exceptEl`.
+      var shown = document.querySelectorAll('.modal.show');
+      for (var i = 0; i < shown.length; i++){
+        var el = shown[i];
+        if (!el) continue;
+        if (exceptEl && el === exceptEl) continue;
 
-        // Safety: if some leftover class remains (rare), remove it.
-        // (No inline style removal here.)
+        // Prefer Bootstrap hide (so it cleans up its own state)
+        if (window.bootstrap) {
+          try {
+            var inst = bootstrap.Modal.getInstance(el) || bootstrap.Modal.getOrCreateInstance(el);
+            inst.hide();
+          } catch (e0) {}
+        }
+
+        // Hard fallback: force-hide
+        try {
+          el.classList.remove('show');
+          el.classList.remove('showing');
+          el.classList.add('d-none');
+          el.setAttribute('aria-hidden', 'true');
+        } catch (e1) {}
       }
+
+      // Cleanup duplicates/backdrops after transitions start
+      mcModalCleanup();
+    }
+    
+    // At least one modal is visible.
+    // Keep EXACTLY one backdrop (Bootstrap expects this), remove extras only.
+    if (backCount > 1) {
+      for (var j = backCount - 1; j >= 1; j--){
+        try { backs[j].parentNode.removeChild(backs[j]); } catch (e1) {}
+      }
+    }
+
+    // Ensure body has modal-open if anything is shown.
+    document.body.classList.add('modal-open');
   }
 
   function modalShow(el){
@@ -380,6 +431,10 @@
     function showModal(){
       if (!DOM.indexChangedModal) return;
       if (shown) return;
+
+      // NEW: HardLock is blocking => close any other modal first (Storage, Info, etc.)
+      preemptOtherModals(DOM.indexChangedModal);
+
       shown = true;
       modalShow(DOM.indexChangedModal);
     }
@@ -838,6 +893,7 @@
       setEnabled(DOM.buttons.searchClear, (!busy && !hard));
       setEnabled(DOM.buttons.flagsDropdownBtn, (!busy && !hard));
       setEnabled(DOM.buttons.uploadBtn, (!busy && !hard));
+      setEnabled(DOM.buttons.storageControl, (!busy && !hard));
 
       if (DOM.upload.input) DOM.upload.input.disabled = (busy || hard);
 
@@ -1022,9 +1078,21 @@
       return requestText(url, opts);
     }
 
-    // App-level “ok” envelope (MiniCloudS style): { ok:true, ... }
+    // App-level “ok” envelope:
+    // - GET endpoints: { ok:true, ... }
+    // - POST endpoints: { ok:[...], err:[...], ... }
     function isAppOk(r){
-      return !!(r && r.ok && r.data && r.data.ok === true);
+      if (!(r && r.ok && r.data)) return false;
+
+      var okv = r.data.ok;
+
+      // list/stats endpoints
+      if (okv === true) return true;
+
+      // POST action endpoints
+      if (Array.isArray(okv)) return true;
+
+      return false;
     }
 
     return {
@@ -1032,6 +1100,313 @@
       getJson: getJson,
       postForm: postForm,
       isAppOk: isAppOk
+    };
+  })();
+
+  /* =========================
+    STORAGE CONTROL (admin tool)
+    - Manual scan + delete (biggest files)
+    - Uses Op.runGlobal so scan/delete cannot overlap
+    - Uses UI busy tokens so the whole UI obeys busy policy
+    ========================= */
+  var StorageControl = (function(){
+    var lastItems = [];      // [{ name, size, mtime, shared }]
+    var selected = Object.create(null); // name => 1
+    function resetUi(){
+      // Always open clean: no stale scan results, no selection, no progress
+      lastItems = [];
+      clearSelection();
+      resetProgress();
+
+      if (DOM.storageList) DOM.storageList.innerHTML = '';
+      if (DOM.storageSummary) DOM.storageSummary.textContent = 'No data.';
+
+      setEnabled(DOM.storageDeleteBtn, false);
+
+      // optional: ensure list is at top
+      if (DOM.storageList) DOM.storageList.scrollTop = 0;
+    }
+
+    function setProgress(pct){
+      pct = Math.max(0, Math.min(100, Math.round(Number(pct) || 0)));
+      if (DOM.storageProgressWrap) DOM.storageProgressWrap.classList.remove('d-none');
+      if (DOM.storageProgressBar) {
+        setPctClass(DOM.storageProgressBar, pct);
+        DOM.storageProgressBar.textContent = pct + '%';
+      }
+    }
+
+    function resetProgress(){
+      if (DOM.storageProgressBar) {
+        setPctClass(DOM.storageProgressBar, 0);
+        DOM.storageProgressBar.textContent = '0%';
+      }
+      if (DOM.storageProgressWrap) DOM.storageProgressWrap.classList.add('d-none');
+    }
+
+    function clearSelection(){
+      selected = Object.create(null);
+    }
+
+    function selectedNames(){
+      var out = [];
+      for (var k in selected) {
+        if (Object.prototype.hasOwnProperty.call(selected, k) && selected[k]) out.push(k);
+      }
+      return out;
+    }
+
+    function render(){
+      if (!DOM.storageList) return;
+
+      var html = [];
+      var totalSelBytes = 0;
+      var selCount = 0;
+
+      for (var i = 0; i < lastItems.length; i++){
+        var it = lastItems[i] || {};
+        var nm = String(it.name || '');
+        if (!nm) continue;
+
+        var isSel = !!selected[nm];
+        if (isSel) {
+          selCount++;
+          totalSelBytes += Number(it.size || 0);
+        }
+
+        html.push(
+          '<div class="d-flex align-items-start gap-2 py-2 border-bottom">' +
+            '<div class="pt-1">' +
+              '<input class="form-check-input" type="checkbox" data-mc-storage-check data-name="' + escapeHtml(encName(nm)) + '"' +
+                (isSel ? ' checked' : '') + '>' +
+            '</div>' +
+            '<div class="flex-grow-1">' +
+              '<div class="fw-semibold">' + escapeHtml(nm) + '</div>' +
+              '<div class="text-body-secondary small">' +
+                'Size: ' + escapeHtml(formatBytes(it.size || 0)) +
+                ' · Date: ' + escapeHtml(formatDate(it.mtime || 0)) +
+                (it.shared ? ' · <span class="text-warning">Shared</span>' : '') +
+              '</div>' +
+            '</div>' +
+          '</div>'
+        );
+      }
+
+      DOM.storageList.innerHTML = html.join('');
+
+      if (DOM.storageSummary) {
+        DOM.storageSummary.textContent =
+          (lastItems.length ? ('Showing ' + lastItems.length + ' item(s). ') : 'No data. ') +
+          (selCount ? ('Selected: ' + selCount + ' (' + formatBytes(totalSelBytes) + ').') : 'Selected: 0.');
+      }
+
+      setEnabled(DOM.storageDeleteBtn, (selectedNames().length > 0) && !UI.getBusy() && !HardLock.isHard());
+
+      RenderLife.after();
+    }
+
+    function wireListSelection(){
+      if (!DOM.storageList) return;
+
+      // delegated change handler for checkboxes inside the modal
+      L.on(DOM.storageList, 'change', function(ev){
+        var t = ev.target;
+        if (!(t instanceof Element)) return;
+        if (!t.matches('[data-mc-storage-check]')) return;
+
+        var enc = String(t.getAttribute('data-name') || '');
+        var nm = decName(enc);
+        if (!nm) return;
+
+        if (t.checked) selected[nm] = 1;
+        else delete selected[nm];
+
+        render();
+      }, true);
+    }
+
+    function postStorage(action, payload){
+      var fd = new FormData();
+      fd.append('csrf', csrfToken);
+      fd.append('action', action);
+
+      payload = payload || {};
+      for (var k in payload) {
+        if (Object.prototype.hasOwnProperty.call(payload, k)) {
+          fd.append(k, String(payload[k]));
+        }
+      }
+
+      return Net.postForm(EP.index, fd);
+    }
+
+    function scan(){
+      // blocked by hard-lock and busy (uniform)
+      if (Guard.blockIf({ busy:true, hard:true })) return Promise.resolve(null);
+
+      return Op.runGlobal(function(){
+        // acquire UI busy token so buttons disable uniformly
+        var tok = UI.busyAcquire('storage-scan');
+
+        Toast.priorityAction();
+        Toast.workingWarning('Storage scan', 'Scanning biggest files...');
+
+        setProgress(10);
+
+        return postStorage('storage_scan', {})
+          .then(function(r){
+            if (!Net.isAppOk(r)) {
+              Toast.show('danger', 'Storage scan', 'Scan failed (server error).');
+              return null;
+            }
+
+            var env = r.data || {};
+            var payload = (env && env.data && typeof env.data === 'object') ? env.data : {};
+            var items = Array.isArray(payload.items) ? payload.items : [];
+
+            lastItems = items;
+            clearSelection();
+
+            // stats sync (envelope has stats)
+            syncStatsFrom(env);
+
+            Toast.show('success', 'Storage scan', 'Scan completed.', { ttl: 1600 });
+            setProgress(100);
+            setTimeout(resetProgress, 450);
+
+            render();
+
+            // premium: make sure the user sees the top of the fresh results
+            if (DOM.storageList) DOM.storageList.scrollTop = 0;
+
+            return payload;
+          })
+          .catch(function(){
+            Toast.show('danger', 'Storage scan', 'Scan failed (network error).');
+            return null;
+          })
+          .finally(function(){
+            UI.busyRelease(tok);
+            tok = 0;
+            resetProgress();
+            // keep delete button state correct after busy clears
+            render();
+          });
+      });
+    }
+
+    function deleteSelected(){
+      if (Guard.blockIf({ busy:true, hard:true })) return Promise.resolve(null);
+
+      var names = selectedNames();
+      if (!names.length) return Promise.resolve(null);
+
+      var msg = 'Delete ' + names.length + ' selected file(s)?';
+      if (!window.confirm(msg)) return Promise.resolve(null);
+
+      return Op.runGlobal(function(){
+        var tok = UI.busyAcquire('storage-delete');
+
+        Toast.priorityAction();
+        Toast.workingWarning('Storage delete', 'Deleting selected files...');
+
+        setProgress(10);
+
+        // send as repeated fields (PHP-friendly)
+        var fd = new FormData();
+        fd.append('csrf', csrfToken);
+        fd.append('action', 'storage_delete');
+        for (var i = 0; i < names.length; i++) fd.append('names[]', names[i]);
+
+        return Net.postForm(EP.index, fd)
+          .then(function(r){
+            if (!Net.isAppOk(r)) {
+              Toast.show('danger', 'Storage delete', 'Delete failed (server error).');
+              return null;
+            }
+
+            var env = r.data || {};
+            var payload = (env && env.data && typeof env.data === 'object') ? env.data : {};
+
+            // stats sync (envelope has stats)
+            syncStatsFrom(env);
+
+            // refresh list to desired count in current query view
+            readInputsIntoQuery();
+
+            // After deletion, server returns updated list under data.items
+            if (Array.isArray(payload.items)) lastItems = payload.items;
+            else lastItems = [];
+            clearSelection();
+            render();
+
+            Toast.show('success', 'Storage delete', 'Delete completed.', { ttl: 1600 });
+            setProgress(100);
+            setTimeout(resetProgress, 450);
+
+            return refreshToDesiredCount('Index', 'Could not refresh list (network/server error).');
+          })
+          .catch(function(){
+            Toast.show('danger', 'Storage delete', 'Delete failed (network error).');
+            return null;
+          })
+          .finally(function(){
+            UI.busyRelease(tok);
+            tok = 0;
+            resetProgress();
+            render();
+          });
+      });
+    }
+
+    function open(){
+      if (!DOM.storageModal) return;
+
+      if (Guard.blockIf({ busy:true, hard:true })) return;
+
+      // Reset happens on modal "show" event (premium UX, always clean)
+      modalShow(DOM.storageModal);
+    }
+
+    function wire(){
+      wireListSelection();
+      // Best UX: always reset when the modal is shown (prevents stale results on 2nd open)
+      if (DOM.storageModal) {
+        L.on(DOM.storageModal, 'show.bs.modal', function(){
+          resetUi();
+        });
+      }
+
+      if (DOM.buttons.storageControl) {
+        L.on(DOM.buttons.storageControl, 'click', function(ev){
+          ev.preventDefault();
+          open();
+        });
+      }
+
+      if (DOM.storageScanBtn) {
+        L.on(DOM.storageScanBtn, 'click', function(ev){
+          ev.preventDefault();
+          scan();
+        });
+      }
+
+      if (DOM.storageDeleteBtn) {
+        L.on(DOM.storageDeleteBtn, 'click', function(ev){
+          ev.preventDefault();
+          deleteSelected();
+        });
+      }
+
+      // default disable until selection exists
+      setEnabled(DOM.storageDeleteBtn, false);
+    }
+
+    return {
+      wire: wire,
+      open: open,
+      scan: scan,
+      deleteSelected: deleteSelected
     };
   })();
 
@@ -1288,6 +1663,7 @@
         Object.prototype.hasOwnProperty.call(payloadOrStats, 'total_files') ||
         Object.prototype.hasOwnProperty.call(payloadOrStats, 'total_human') ||
         Object.prototype.hasOwnProperty.call(payloadOrStats, 'index_changed') ||
+        Object.prototype.hasOwnProperty.call(payloadOrStats, 'index_must_rebuild') ||
         Object.prototype.hasOwnProperty.call(payloadOrStats, 'index_missing') ||
         Object.prototype.hasOwnProperty.call(payloadOrStats, 'index_forced');
 
@@ -1319,9 +1695,9 @@
 
         syncStatsFrom(r.data);
 
-        // Only finish the "Check Index" flow if we are actually in that flow.
         if (CheckIndexFlow && CheckIndexFlow.isChecking && CheckIndexFlow.isChecking()) {
-          if (CheckIndexFlow.finishFromStats) CheckIndexFlow.finishFromStats(r.data);
+          var s = (r.data && r.data.stats && typeof r.data.stats === 'object') ? r.data.stats : r.data;
+          if (CheckIndexFlow.finishFromStats) CheckIndexFlow.finishFromStats(s);
         }
 
         return r.data;
@@ -1564,7 +1940,7 @@
     return map;
   }
 
-  function fetchList(offset, append){
+  function fetchList(offset, append, preserveUrlMap){
     offset = Number(offset || 0);
     append = !!append;
 
@@ -1620,7 +1996,12 @@
 
       pageState.total = Number(r.data.total || 0);
 
-      var oldUrlMap = indexExistingUrlsByName();
+      // URL preservation priority:
+      // 1) explicit preserveUrlMap (e.g., refreshToDesiredCount snapshot)
+      // 2) current in-memory pageState (normal path)
+      // 3) DOM (best-effort)
+      var oldUrlMap = (preserveUrlMap && typeof preserveUrlMap === 'object') ? preserveUrlMap : indexExistingUrlsByName();
+
       var domUrlMap = indexVisibleUrlsFromDom();
       for (var k0 in domUrlMap) {
         if (Object.prototype.hasOwnProperty.call(domUrlMap, k0)) oldUrlMap[k0] = domUrlMap[k0];
@@ -1685,8 +2066,8 @@
     });
   }
 
-  function fetchListSafe(offset, append, toastTitle, toastMsg){
-    return fetchList(offset, append)
+  function fetchListSafe(offset, append, toastTitle, toastMsg, preserveUrlMap){
+    return fetchList(offset, append, preserveUrlMap)
       .then(function(data){
         if (data && data.ignored) return null;
         return data;
@@ -1705,6 +2086,14 @@
   function refreshToDesiredCount(toastTitle, toastMsg){
     var desired = Math.max(PAGE_SIZE, Number(getVisibleCountNow() || 0));
 
+    // Snapshot shared URLs BEFORE we wipe pageState/files (priority fix).
+    // This is NOT a cache: it only survives inside this refresh run.
+    var preserveUrlMap = indexExistingUrlsByName();
+    var preserveDom = indexVisibleUrlsFromDom();
+    for (var pk in preserveDom) {
+      if (Object.prototype.hasOwnProperty.call(preserveDom, pk)) preserveUrlMap[pk] = preserveDom[pk];
+    }
+
     __mcListSilent++;
     __mcListNoAbort++;
 
@@ -1715,7 +2104,13 @@
     pageState.offset = 0;
 
     function loop(){
-      return fetchListSafe(next, next > 0, toastTitle || 'Index', toastMsg || 'Could not refresh list (network/server error).')
+      return fetchListSafe(
+        next,
+        next > 0,
+        toastTitle || 'Index',
+        toastMsg || 'Could not refresh list (network/server error).',
+        preserveUrlMap
+      )
         .then(function(resp){
           if (!resp) return null;
 
@@ -2573,6 +2968,10 @@
 
         fetchListSafe(nextOffset, true, 'Index', 'Could not load more items.')
         .finally(function(){
+          // re-enable if still allowed
+          if (!UI.getBusy() && !HardLock.isHard()) {
+            setEnabled(DOM.buttons.showMore, true);
+          }
           RenderLife.after();
         });
       });
@@ -2611,7 +3010,8 @@
     // First-paint stats application (same path as ajax=stats)
     syncStatsFrom({
       index_changed: Number(BOOT.index_changed || 0),
-      index_changed_known: Number(BOOT.index_changed_known || 0),
+      index_must_rebuild: Number(BOOT.index_must_rebuild || 0),
+      index_forced: Number(BOOT.index_forced || 0),
       index_missing: Number(BOOT.index_missing || 0),
       total_files: Number(BOOT.totalFiles || 0),
       total_human: (
@@ -2651,5 +3051,6 @@
   wireDelegatedFileActions();
   initBackToTop();
   initInfoModal();
+  if (StorageControl && StorageControl.wire) StorageControl.wire();
   refreshStats();
 })();
