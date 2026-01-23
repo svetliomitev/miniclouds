@@ -1536,27 +1536,25 @@
     function finishFromStats(stats){
       if (!started) return;
 
-      // Always close the “checking…” toast first
       Toast.hideMain();
 
       var hard = (HardLock && HardLock.isHard) ? HardLock.isHard() : false;
       var forced = (Number(stats && stats.index_forced || 0) === 1);
 
       if (hard || forced || deferHard) {
-        // lock state already synced in applyStats(show:false during check)
-        // now we show the modal deterministically
         if (HardLock && HardLock.showModal) HardLock.showModal();
       } else {
-        // ensure modal is NOT left open from a previous lock
         if (HardLock && HardLock.clear) HardLock.clear({ hide:true });
         Toast.priorityAction();
         Toast.show('success', 'Check Index', 'Index is up to date.', { ttl: 1600 });
       }
 
-      // one-shot
       pending = false;
       started = false;
       deferHard = false;
+
+      // NEW: checking is over => allow shared-url hydration to run once
+      RenderLife.after();
     }
 
     function fail(){
@@ -1572,6 +1570,9 @@
       pending = false;
       started = false;
       deferHard = false;
+      
+      // NEW: checking is over => allow shared-url hydration to run once
+      RenderLife.after();
     }
 
     return {
