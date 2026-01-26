@@ -152,35 +152,84 @@ if (!function_exists('str_ends_with')) {
 }
 
 /* =========================
-   AJAX / JSON FAIL HELPERS
+   AJAX / JSON HELPERS
    ========================= */
 
 function mc_is_ajax(): bool {
     $xrw = strtolower((string)($_SERVER['HTTP_X_REQUESTED_WITH'] ?? ''));
-    return ($xrw === 'xmlhttprequest');
+    if ($xrw === 'xmlhttprequest') return true;
+
+    // fetch() often doesn't send X-Requested-With; Accept: application/json is a solid signal
+    $acc = strtolower((string)($_SERVER['HTTP_ACCEPT'] ?? ''));
+    if ($acc !== '' && strpos($acc, 'application/json') !== false) return true;
+
+    return false;
 }
 
-function mc_json_fail(string $msg, int $status = 400): never {
+/* Canonical JSON output (one place for headers + encoding) */
+function mc_json_send(array $payload, int $status = 200): never {
     http_response_code($status);
     header('Content-Type: application/json; charset=utf-8');
     header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
-    echo json_encode(['error' => $msg], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+
+    echo json_encode(
+        $payload,
+        JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE
+    );
     exit;
+}
+
+/* Canonical MiniCloudS AJAX response shape */
+function mc_ajax_respond(
+    array $ok = [],
+    array $err = [],
+    string $redirect = '',
+    array $data = [],
+    array $stats = [],
+    int $status = 200
+): never {
+    $out = [
+        'ok'       => array_values($ok),
+        'err'      => array_values($err),
+        'redirect' => $redirect,
+    ];
+    if ($data)  $out['data']  = $data;
+    if ($stats) $out['stats'] = $stats;
+
+    mc_json_send($out, $status);
+}
+
+/* Standard stats payload (keys MUST match app.js applyStats) */
+function mc_stats_payload(array $idxState, array $fileIndex): array {
+    $totalBytes = mc_index_total_bytes($fileIndex);
+
+    // STRICT: canonical 3-flag state only (no backward compat)
+    $blocked = !empty($idxState['idx_blocked']) ? 1 : 0;
+    $missing = !empty($idxState['idx_missing']) ? 1 : 0;
+    $known   = !empty($idxState['idx_known'])   ? 1 : 0;
+
+    return [
+        // IMPORTANT: these keys must match app.js applyStats()
+        'idx_blocked' => $blocked,
+        'idx_missing' => $missing,
+        'idx_known'   => $known,
+
+        'total_files' => count($fileIndex),
+        'total_bytes' => (int)$totalBytes,
+        'total_human' => format_bytes((int)$totalBytes),
+    ];
+}
+
+/* Backward compat (used by installer / other files) */
+function mc_json_fail(string $msg, int $status = 400): never {
+    mc_json_send(['error' => $msg], $status);
 }
 
 /* Used by index.php for CSRF/forbidden */
 function mc_respond_forbidden(string $msg): never {
     if (mc_is_ajax()) {
-        http_response_code(403);
-        header('Content-Type: application/json; charset=utf-8');
-        header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
-        echo json_encode([
-            'ok'  => [],
-            'err' => [$msg],
-        ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-        exit;
+        mc_ajax_respond([], [$msg], '', [], [], 403);
     }
-
     mc_redirect_error(403);
 }
 
@@ -346,7 +395,7 @@ function mc_write_install_state(
     $existingId = '';
     $eid = (string)($existing['instance_id'] ?? '');
 
-    if ($eid !== '' && preg_match('~^[a-f0-9]{20,64}$~i', $eid)) {
+    if ($eid !== '' && preg_match('~^[a-f0-9]{16,64}$~i', $eid)) {
         $existingId = strtolower($eid);
     }
 
@@ -1228,6 +1277,21 @@ function mc_index_flags(string $cacheDir, string $uploadDir): array {
         'must'    => !empty($idx['must']),
         'drift'   => !empty($idx['drift']),
         'raw'     => is_array($idx) ? $idx : [],
+    ];
+}
+
+function mc_index_state(string $cacheDir, string $uploadDir): array {
+    $f = mc_index_flags($cacheDir, $uploadDir);
+
+    $missing = !empty($f['missing']);
+    $known   = !empty($f['known']);
+    $must    = !empty($f['must']);
+
+    // blocked means: must rebuild for safety (drift OR missing baseline/index)
+    return [
+        'idx_blocked' => ($must ? 1 : 0),
+        'idx_missing' => ($missing ? 1 : 0),
+        'idx_known'   => ($known ? 1 : 0),
     ];
 }
 

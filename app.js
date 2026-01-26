@@ -15,7 +15,7 @@
       if (!txt) return {};
       var data = JSON.parse(txt);
       return (data && typeof data === 'object') ? data : {};
-    } catch (e) {
+    } catch (e0) {
       return {};
     }
   })();
@@ -92,20 +92,20 @@
      ========================= */
   var DOM = {
     toast: {
-      el: document.getElementById('toast'),
+      el:    document.getElementById('toast'),
       title: document.getElementById('toastTitle'),
-      body: document.getElementById('toastBody'),
-      icon: document.getElementById('toastIcon'),
+      body:  document.getElementById('toastBody'),
+      icon:  document.getElementById('toastIcon'),
       close: document.getElementById('toastCloseBtn')
     },
     searchToast: {
-      el: document.getElementById('toastSearch'),
-      title: document.getElementById('toastSearchTitle'),
-      body: document.getElementById('toastSearchBody'),
-      icon: document.getElementById('toastSearchIcon'),
-      close: document.getElementById('toastSearchCloseBtn'),
+      el:      document.getElementById('toastSearch'),
+      title:   document.getElementById('toastSearchTitle'),
+      body:    document.getElementById('toastSearchBody'),
+      icon:    document.getElementById('toastSearchIcon'),
+      close:   document.getElementById('toastSearchCloseBtn'),
       keyLast: null,
-      scope: null
+      scope:   null
     },
 
     grid: document.getElementById('filesGrid'),
@@ -153,6 +153,8 @@
 
     backToTop: document.getElementById('backToTop'),
     infoModal: document.getElementById('mcInfoModal'),
+    infoFilesCount: document.getElementById('mcInfoFilesCount'),
+    infoTotalSize:  document.getElementById('mcInfoTotalSize'),
 
     indexChangedModal: document.getElementById('mcIndexChangedModal'),
     indexRebuildNowBtn: document.getElementById('mcRebuildIndexNowBtn'),
@@ -209,10 +211,19 @@
 
   // IMPORTANT: stable attribute representation for filenames
   function encName(name){
-    try { return encodeURIComponent(String(name || '')); } catch (e) { return ''; }
+    try {
+      return encodeURIComponent(String(name || ''));
+    } catch (e0) {
+      return '';
+    }
   }
+
   function decName(s){
-    try { return decodeURIComponent(String(s || '')); } catch (e) { return String(s || ''); }
+    try {
+      return decodeURIComponent(String(s || ''));
+    } catch (e1) {
+      return String(s || '');
+    }
   }
 
   function startDownloadNoNav(url){
@@ -286,20 +297,19 @@
   }
 
   function syncInfoModalFromTotals(){
-    var infoFiles = document.getElementById('mcInfoFilesCount');
-    var infoSize  = document.getElementById('mcInfoTotalSize');
-
-    if (infoFiles) infoFiles.textContent = String(Number(Totals.files || 0));
-    if (infoSize)  infoSize.textContent  = String(Totals.human || '');
+    if (DOM.infoFilesCount) DOM.infoFilesCount.textContent = String(Totals.files || 0);
+    if (DOM.infoTotalSize)  DOM.infoTotalSize.textContent  = Totals.human || '';
   }
 
   function applyTotalsUiPolicy(){
+    var totalFiles = (Totals.files || 0);
+
     // Delete All availability should follow ALL uploads
-    UI.setDeleteAllHasFiles(Number(Totals.files || 0) > 0);
+    UI.setDeleteAllHasFiles(totalFiles > 0);
 
     // Optional: keep the data attribute in sync (used by CSS / hints)
     if (DOM.buttons.deleteAll) {
-      if (Number(Totals.files || 0) <= 0) DOM.buttons.deleteAll.setAttribute('data-mc-empty','1');
+      if (totalFiles <= 0) DOM.buttons.deleteAll.setAttribute('data-mc-empty','1');
       else DOM.buttons.deleteAll.removeAttribute('data-mc-empty');
     }
 
@@ -310,6 +320,31 @@
   /* =========================
      MODALS (centralized + safe cleanup)
      ========================= */
+  function preemptOtherModals(exceptEl){
+    var shown = document.querySelectorAll('.modal.show');
+    for (var i = 0; i < shown.length; i++){
+      var el = shown[i];
+      if (!el) continue;
+      if (exceptEl && el === exceptEl) continue;
+
+      if (window.bootstrap) {
+        try {
+          var inst = bootstrap.Modal.getInstance(el) || bootstrap.Modal.getOrCreateInstance(el);
+          inst.hide();
+        } catch (e0) {}
+      }
+
+      try {
+        el.classList.remove('show');
+        el.classList.remove('showing');
+        el.classList.add('d-none');
+        el.setAttribute('aria-hidden', 'true');
+      } catch (e1) {}
+    }
+
+    mcModalCleanup();
+  }
+
   function mcModalCleanup(){
     // How many modals are currently shown?
     var shown = document.querySelectorAll('.modal.show');
@@ -328,35 +363,6 @@
       return;
     }
 
-    function preemptOtherModals(exceptEl){
-      // Hide any currently shown modal except `exceptEl`.
-      var shown = document.querySelectorAll('.modal.show');
-      for (var i = 0; i < shown.length; i++){
-        var el = shown[i];
-        if (!el) continue;
-        if (exceptEl && el === exceptEl) continue;
-
-        // Prefer Bootstrap hide (so it cleans up its own state)
-        if (window.bootstrap) {
-          try {
-            var inst = bootstrap.Modal.getInstance(el) || bootstrap.Modal.getOrCreateInstance(el);
-            inst.hide();
-          } catch (e0) {}
-        }
-
-        // Hard fallback: force-hide
-        try {
-          el.classList.remove('show');
-          el.classList.remove('showing');
-          el.classList.add('d-none');
-          el.setAttribute('aria-hidden', 'true');
-        } catch (e1) {}
-      }
-
-      // Cleanup duplicates/backdrops after transitions start
-      mcModalCleanup();
-    }
-    
     // At least one modal is visible.
     // Keep EXACTLY one backdrop (Bootstrap expects this), remove extras only.
     if (backCount > 1) {
@@ -371,6 +377,11 @@
 
   function modalShow(el){
     if (!el || !window.bootstrap) return;
+
+    // IMPORTANT: modalHide() uses forceHide() which adds d-none.
+    // Always undo that before asking Bootstrap to show the modal.
+    forceShow(el);
+
     mcModalCleanup();
     try {
       var m = bootstrap.Modal.getOrCreateInstance(el, { backdrop:'static', keyboard:false });
@@ -395,12 +406,12 @@
   }
 
   /* =========================
-   HARD LOCK (state machine)
-   Step 6 (clean cut)
-   - Owns: lock state + modal show/hide
-   - Exposes: syncFromStats(), isHard(), reason()
-   - No direct UI coupling; UI registers an onChange hook
-   ========================= */
+     HARD LOCK (state machine)
+     Step 6 (clean cut)
+     - Owns: lock state + modal show/hide
+     - Exposes: syncFromStats(), isHard(), reason()
+     - No direct UI coupling; UI registers an onChange hook
+     ========================= */
   var HardLock = (function(){
     var state = {
       active: false,
@@ -408,7 +419,12 @@
       source: null    // 'boot' | 'stats' | 'check' | 'action'
     };
 
-    var shown = false; // modal shown?
+    function isModalShown(){
+      return !!(
+        DOM.indexChangedModal &&
+        DOM.indexChangedModal.classList.contains('show')
+      );
+    }
 
     var onChange = null;
 
@@ -430,19 +446,21 @@
 
     function showModal(){
       if (!DOM.indexChangedModal) return;
-      if (shown) return;
 
-      // NEW: HardLock is blocking => close any other modal first (Storage, Info, etc.)
+      // DOM is the single source of truth
+      if (isModalShown()) return;
+
+      // HardLock preempts all other modals (Storage, Info, etc.)
       preemptOtherModals(DOM.indexChangedModal);
 
-      shown = true;
       modalShow(DOM.indexChangedModal);
     }
 
     function hideModal(){
       if (!DOM.indexChangedModal) return;
-      if (!shown) return;
-      shown = false;
+
+      if (!isModalShown()) return;
+
       modalHide(DOM.indexChangedModal);
     }
 
@@ -471,10 +489,8 @@
     }
 
     function deriveReasonFromStats(stats){
-      // prioritize explicit forced lock
-      if (Number(stats && stats.index_forced || 0) === 1) return 'forced';
-      if (Number(stats && stats.index_missing || 0) === 1) return 'missing';
-      if (Number(stats && (stats.index_changed || stats.index_must_rebuild) ? 1 : 0) === 1) return 'drift';
+      if (Number(stats && stats.idx_missing || 0) === 1) return 'missing';
+      if (Number(stats && stats.idx_blocked || 0) === 1) return 'drift';
       return null;
     }
 
@@ -599,11 +615,17 @@
       hideMain();
 
       var cls = 'toast border-0 w-100 pretty';
-      if (kind === 'success') cls += ' text-bg-success';
-      else if (kind === 'danger') cls += ' text-bg-danger';
-      else if (kind === 'warning') cls += ' text-bg-warning';
-      else if (kind === 'info') cls += ' text-bg-info';
-      else cls += ' text-bg-secondary';
+      if (kind === 'success') {
+        cls += ' text-bg-success';
+      } else if (kind === 'danger') {
+        cls += ' text-bg-danger';
+      } else if (kind === 'warning') {
+        cls += ' text-bg-warning';
+      } else if (kind === 'info') {
+        cls += ' text-bg-info';
+      } else {
+        cls += ' text-bg-secondary';
+      }
 
       t.el.className = cls;
       if (t.icon) t.icon.className = toastIconClassFor(kind);
@@ -798,8 +820,12 @@
       globalRunning = true;
 
       return Promise.resolve()
-        .then(function(){ return fn(); })
-        .finally(function(){ globalRunning = false; });
+        .then(function(){
+          return fn();
+        })
+        .finally(function(){
+          globalRunning = false;
+        });
     }
 
     function runKey(key, fn){
@@ -810,8 +836,12 @@
       keyRunning[key] = 1;
 
       return Promise.resolve()
-        .then(function(){ return fn(); })
-        .finally(function(){ delete keyRunning[key]; });
+        .then(function(){
+          return fn();
+        })
+        .finally(function(){
+          delete keyRunning[key];
+        });
     }
 
     function isGlobal(){
@@ -1112,6 +1142,12 @@
   var StorageControl = (function(){
     var lastItems = [];      // [{ name, size, mtime, shared }]
     var selected = Object.create(null); // name => 1
+
+    function pickDataPayload(env){
+      if (env && env.data && typeof env.data === 'object') return env.data;
+      return {};
+    }
+
     function resetUi(){
       // Always open clean: no stale scan results, no selection, no progress
       lastItems = [];
@@ -1128,10 +1164,11 @@
     }
 
     function setProgress(pct){
-      pct = Math.max(0, Math.min(100, Math.round(Number(pct) || 0)));
+      pct = Math.max(0, Math.min(100, pct));
       if (DOM.storageProgressWrap) DOM.storageProgressWrap.classList.remove('d-none');
       if (DOM.storageProgressBar) {
         setPctClass(DOM.storageProgressBar, pct);
+        pct = Math.round(Number(pct) || 0);
         DOM.storageProgressBar.textContent = pct + '%';
       }
     }
@@ -1261,7 +1298,7 @@
             }
 
             var env = r.data || {};
-            var payload = (env && env.data && typeof env.data === 'object') ? env.data : {};
+            var payload = pickDataPayload(env);
             var items = Array.isArray(payload.items) ? payload.items : [];
 
             lastItems = items;
@@ -1272,7 +1309,6 @@
 
             Toast.show('success', 'Storage scan', 'Scan completed.', { ttl: 1600 });
             setProgress(100);
-            setTimeout(resetProgress, 450);
 
             render();
 
@@ -1326,7 +1362,7 @@
             }
 
             var env = r.data || {};
-            var payload = (env && env.data && typeof env.data === 'object') ? env.data : {};
+            var payload = pickDataPayload(env);
 
             // stats sync (envelope has stats)
             syncStatsFrom(env);
@@ -1342,7 +1378,6 @@
 
             Toast.show('success', 'Storage delete', 'Delete completed.', { ttl: 1600 });
             setProgress(100);
-            setTimeout(resetProgress, 450);
 
             return refreshToDesiredCount('Index', 'Could not refresh list (network/server error).');
           })
@@ -1362,10 +1397,40 @@
     function open(){
       if (!DOM.storageModal) return;
 
-      if (Guard.blockIf({ busy:true, hard:true })) return;
+      // IMPORTANT: Storage Control must not rely on stale HardLock flags.
+      // Only block on busy; then fetch fresh stats and decide.
+      if (Guard.blockIf({ busy:true })) return;
 
-      // Reset happens on modal "show" event (premium UX, always clean)
-      modalShow(DOM.storageModal);
+      // Build stats URL (same endpoint as refreshStats())
+      var statsUrl = buildStatsUrl();
+
+      Net.getJson(statsUrl)
+        .then(function(r){
+          if (!Net.isAppOk(r)) {
+            Toast.show('warning', 'Storage Control', 'Could not check index state (network/server error).');
+            return null;
+          }
+
+          // Apply stats immediately (this will activate HardLock + show Index Changed modal if needed)
+          syncStatsFrom(r.data);
+
+          // Decide using the fresh stats we just received
+          var stats = (r.data && r.data.stats && typeof r.data.stats === 'object') ? r.data.stats : r.data;
+          var blocked = (Number(stats && stats.idx_blocked || 0) === 1) || (Number(stats && stats.idx_missing || 0) === 1);
+
+          if (blocked) {
+            // HardLock already handled modal; do NOT open storage modal.
+            return null;
+          }
+
+          // Safe to open
+          modalShow(DOM.storageModal);
+          return null;
+        })
+        .catch(function(){
+          Toast.show('warning', 'Storage Control', 'Could not check index state (network error).');
+          return null;
+        });
     }
 
     function wire(){
@@ -1433,7 +1498,7 @@
   var __mcNavigating = false;
 
   var __mcListReqSeq = 0;
-  var __mcListAbortCtl = null;
+  var __mcListAbortController = null;
   var __mcListSilent = 0;
   var __mcListNoAbort = 0;
 
@@ -1445,7 +1510,7 @@
   var EP = (function(){
     function baseDirUrl(){
       // Stable directory base even when current URL is "/subdir" (no trailing slash)
-      // or "/subdir?check=1" etc.
+      // or "/subdir?..." etc.
       try {
         var origin = window.location.origin;
         var p = String(window.location.pathname || '/');
@@ -1485,40 +1550,16 @@
   - Does NOT decide drift itself (HardLock.syncFromStats already did that in applyStats)
   ========================= */
   var CheckIndexFlow = (function(){
-    var pending = false;
     var started = false;
     var deferHard = false;
 
-    function detect(){
-      try {
-        var u = new URL(window.location.href);
-        pending = (u.searchParams.get('check') === '1');
-      } catch (e) {
-        pending = (String(window.location.search || '').indexOf('check=1') !== -1);
-      }
-      return pending;
-    }
-
-    function clearUrlFlag(){
-      try {
-        var u = new URL(window.location.href);
-        if (!u.searchParams.has('check') && !u.searchParams.has('_')) return;
-        u.searchParams.delete('check');
-        u.searchParams.delete('_');
-        window.history.replaceState(null, '', u.toString());
-      } catch (e) {}
-    }
-
-    function beginIfNeeded(){
-      if (!pending || started) return false;
+    function begin(){
+      if (started) return false;
       started = true;
       deferHard = false;
 
       Toast.priorityAction();
       Toast.show('warning', 'Check Index', 'Checking index state...', { ttl: 1200, noClose: true });
-
-      // one-shot URL cleanup so refresh / copy-paste URL is clean
-      clearUrlFlag();
       return true;
     }
 
@@ -1531,17 +1572,19 @@
       deferHard = true;
     }
 
-    // stats already applied (applyStats called before this)
-    // so we finish based on HardLock + deferHard deterministically
-    function finishFromStats(stats){
+    function finishFromStats(s){
       if (!started) return;
 
       Toast.hideMain();
 
-      var hard = (HardLock && HardLock.isHard) ? HardLock.isHard() : false;
-      var forced = (Number(stats && stats.index_forced || 0) === 1);
+      // Use the stats we just received to sync HardLock deterministically
+      if (s && HardLock && HardLock.syncFromStats) {
+        HardLock.syncFromStats(s, 'check', { show:false, hide:false });
+      }
 
-      if (hard || forced || deferHard) {
+      var hard = (HardLock && HardLock.isHard) ? HardLock.isHard() : false;
+
+      if (hard || deferHard) {
         if (HardLock && HardLock.showModal) HardLock.showModal();
       } else {
         if (HardLock && HardLock.clear) HardLock.clear({ hide:true });
@@ -1549,11 +1592,9 @@
         Toast.show('success', 'Check Index', 'Index is up to date.', { ttl: 1600 });
       }
 
-      pending = false;
       started = false;
       deferHard = false;
 
-      // NEW: checking is over => allow shared-url hydration to run once
       RenderLife.after();
     }
 
@@ -1561,41 +1602,23 @@
       if (!started) return;
 
       Toast.hideMain();
-
-      // Don’t change HardLock state here; server state is unknown.
       Toast.priorityAction();
       Toast.show('warning', 'Check Index', 'Could not check index state (network/server error).', { ttl: 2200 });
 
-      // one-shot
-      pending = false;
       started = false;
       deferHard = false;
-      
-      // NEW: checking is over => allow shared-url hydration to run once
+
       RenderLife.after();
     }
 
     return {
-      detect: detect,
-      beginIfNeeded: beginIfNeeded,
+      begin: begin,
       isChecking: isChecking,
       markDeferHard: markDeferHard,
       finishFromStats: finishFromStats,
       fail: fail
     };
   })();
-
-  function refreshPageForCheckIndex(){
-    try {
-      var u = new URL(window.location.href);
-      // cache-bust so drift detection is re-evaluated on the server
-      u.searchParams.set('check', '1');
-      u.searchParams.set('_', String(Date.now()));
-      window.location.href = u.toString();
-    } catch (e) {
-      window.location.reload();
-    }
-  }
 
   function queryKey(){
     return 'q=' + (query.q||'') + '|from=' + (query.from||'') + '|to=' + (query.to||'') + '|flags=' + (query.flags||'all');
@@ -1613,6 +1636,11 @@
     if (DOM.counts.total2) DOM.counts.total2.textContent = String(total);
   }
 
+  function pickStatsFromEnvelope(env){
+    if (env && env.stats && typeof env.stats === 'object') return env.stats;
+    return env;
+  }
+
   function applyStats(stats){
     // applyStats() only decides HARD lock vs clear
     // no "known/unknown drift" states are tracked client-side
@@ -1622,25 +1650,39 @@
     // During "Check Index" refresh: do not show modal here (toast must finish first).
     var checking = (CheckIndexFlow && CheckIndexFlow.isChecking && CheckIndexFlow.isChecking());
     if (checking) {
-      // update lock state but DO NOT show modal yet
-      HardLock.syncFromStats(stats, 'check', { show:false, hide:false });
-
-      // if lock is active, remember that we must show it after the checking toast
-      if (HardLock.isHard() && CheckIndexFlow && CheckIndexFlow.markDeferHard) {
-        CheckIndexFlow.markDeferHard();
+      // During Check Index: NEVER clear HardLock here.
+      // Only activate if drift/missing is reported; otherwise keep current lock state.
+      if (Number(stats && stats.idx_missing || 0) === 1 || Number(stats && stats.idx_blocked || 0) === 1) {
+        HardLock.syncFromStats(stats, 'check', { show:false, hide:false });
+        if (HardLock.isHard() && CheckIndexFlow && CheckIndexFlow.markDeferHard) {
+          CheckIndexFlow.markDeferHard();
+        }
       }
     } else {
-      // normal path: apply lock state and show/hide modal accordingly
       HardLock.syncFromStats(stats, 'stats', { show:true, hide:true });
     }
 
-    if (stats.total_human && DOM.footerTotal) DOM.footerTotal.textContent = String(stats.total_human);
+    var totalHuman = (stats && stats.total_human) || '';
+
+    if (DOM.footerTotal) DOM.footerTotal.textContent = totalHuman;
 
     // Update "all uploads" totals state (filter-independent)
-    if (stats.total_human) Totals.human = String(stats.total_human);
+    Totals.human = totalHuman;
     Totals.files = Number(stats.total_files || 0);
 
     applyTotalsUiPolicy();
+  }
+
+  function looksLikeStatsObject(o){
+    if (!o || typeof o !== 'object') return false;
+
+    return (
+      Object.prototype.hasOwnProperty.call(o, 'total_files') ||
+      Object.prototype.hasOwnProperty.call(o, 'total_human') ||
+      Object.prototype.hasOwnProperty.call(o, 'idx_blocked') ||
+      Object.prototype.hasOwnProperty.call(o, 'idx_missing') ||
+      Object.prototype.hasOwnProperty.call(o, 'idx_known')
+    );
   }
 
   // Single “stats sync” policy:
@@ -1660,15 +1702,7 @@
       }
 
       // sometimes we pass stats directly
-      var looksLikeStats =
-        Object.prototype.hasOwnProperty.call(payloadOrStats, 'total_files') ||
-        Object.prototype.hasOwnProperty.call(payloadOrStats, 'total_human') ||
-        Object.prototype.hasOwnProperty.call(payloadOrStats, 'index_changed') ||
-        Object.prototype.hasOwnProperty.call(payloadOrStats, 'index_must_rebuild') ||
-        Object.prototype.hasOwnProperty.call(payloadOrStats, 'index_missing') ||
-        Object.prototype.hasOwnProperty.call(payloadOrStats, 'index_forced');
-
-      if (looksLikeStats) {
+      if (looksLikeStatsObject(payloadOrStats)) {
         try { applyStats(payloadOrStats); } catch (e1) {}
         return Promise.resolve(payloadOrStats);
       }
@@ -1677,14 +1711,23 @@
     return refreshStats();
   }
 
-  function refreshStats(){
+  function buildStatsUrl(){
     var u;
     try { u = new URL(EP.index); }
     catch (e0) { u = null; }
 
-    var statsUrl = u ? (u.searchParams.set('ajax','stats'), u.toString())
-                     : (EP.index + '?ajax=stats');
+    if (u) {
+      u.searchParams.set('ajax', 'stats');
+      u.searchParams.set('_', String(Date.now())); // cache-buster
+      return u.toString();
+    }
 
+    // cache-buster
+    return EP.index + '?ajax=stats&_=' + Date.now();
+  }
+
+  function refreshStats(){
+    var statsUrl = buildStatsUrl();
     return Net.getJson(statsUrl)
       .then(function(r){
         if (!Net.isAppOk(r)) {
@@ -1697,7 +1740,7 @@
         syncStatsFrom(r.data);
 
         if (CheckIndexFlow && CheckIndexFlow.isChecking && CheckIndexFlow.isChecking()) {
-          var s = (r.data && r.data.stats && typeof r.data.stats === 'object') ? r.data.stats : r.data;
+          var s = pickStatsFromEnvelope(r.data);
           if (CheckIndexFlow.finishFromStats) CheckIndexFlow.finishFromStats(s);
         }
 
@@ -1941,20 +1984,57 @@
     return map;
   }
 
+  function updateSearchToastForCurrentQuery(shownCount, totalCount, append, returnedNow){
+    shownCount = Number(shownCount || 0);
+    totalCount = Number(totalCount || 0);
+    append = !!append;
+    returnedNow = Number(returnedNow || 0);
+
+    if (append && returnedNow > 0 && totalCount > 0) {
+      Toast.showResults(
+        shownCount,
+        totalCount,
+        queryKey() + '|append|shown=' + shownCount + '|total=' + totalCount,
+        { append:true, ttl:2000 }
+      );
+      return;
+    }
+
+    var hasFilter =
+      ((query.q && query.q.trim()) || query.from || query.to || (query.flags && query.flags !== 'all'));
+
+    if (hasFilter) {
+      if (totalCount > 0) {
+        Toast.showResults(
+          shownCount,
+          totalCount,
+          queryKey() + '|n=' + totalCount + '|shown=' + shownCount,
+          { append:false, ttl:2000 }
+        );
+      } else {
+        Toast.hideSearch();
+      }
+    } else {
+      Toast.hideSearch();
+    }
+  }
+
+  function truthyHasMore(v){
+    return (v === true) || (v === 1) || (v === '1');
+  }
+
   function fetchList(offset, append, preserveUrlMap){
     offset = Number(offset || 0);
     append = !!append;
 
-    var reqOffset = offset;
-    var reqAppend = append;
     var reqId = ++__mcListReqSeq;
 
     // Abort previous in-flight list request unless we're in "no abort" mode
     if (!__mcListNoAbort) {
-      if (__mcListAbortCtl) { try { __mcListAbortCtl.abort(); } catch (e0) {} }
-      __mcListAbortCtl = (window.AbortController ? new AbortController() : null);
+      if (__mcListAbortController) { try { __mcListAbortController.abort(); } catch (e0) {} }
+      __mcListAbortController = (window.AbortController ? new AbortController() : null);
     } else {
-      __mcListAbortCtl = null;
+      __mcListAbortController = null;
     }
 
     var url;
@@ -1973,7 +2053,7 @@
     url.searchParams.set('flags', query.flags || 'all');
 
     return Net.getJson(url.toString(), {
-      signal: __mcListAbortCtl ? __mcListAbortCtl.signal : undefined
+      signal: __mcListAbortController ? __mcListAbortController.signal : undefined
     })
     .then(function(r0){
       // normalize to the old internal shape used below
@@ -2008,11 +2088,11 @@
         if (Object.prototype.hasOwnProperty.call(domUrlMap, k0)) oldUrlMap[k0] = domUrlMap[k0];
       }
 
-      if (reqAppend) pageState.files = pageState.files.concat(r.data.files);
+      if (append) pageState.files = pageState.files.concat(r.data.files);
       else pageState.files = r.data.files;
 
       var returned = r.data.files.length;
-      pageState.offset = reqOffset + returned;
+      pageState.offset = offset + returned;
 
       for (var k = 0; k < pageState.files.length; k++) {
         var row = pageState.files[k];
@@ -2026,36 +2106,9 @@
         var terms = splitTerms(query.q || '');
         updateCounts(pageState.files.length, pageState.total);
 
-        var returnedNow = (r.data && Array.isArray(r.data.files)) ? r.data.files.length : 0;
+        updateSearchToastForCurrentQuery(pageState.files.length, pageState.total, append, returned);
 
-        if (reqAppend && returnedNow > 0 && pageState.total > 0) {
-          Toast.showResults(
-            pageState.files.length,
-            pageState.total,
-            queryKey() + '|append|shown=' + pageState.files.length + '|total=' + pageState.total,
-            { append:true, ttl:2000 }
-          );
-        } else {
-          var hasFilter = ((query.q && query.q.trim()) || query.from || query.to || (query.flags && query.flags !== 'all'));
-          if (hasFilter) {
-            if (pageState.total > 0) {
-              Toast.showResults(
-                pageState.files.length,
-                pageState.total,
-                queryKey() + '|n=' + pageState.total + '|shown=' + pageState.files.length,
-                { append:false, ttl:2000 }
-              );
-            } else {
-              Toast.hideSearch();
-            }
-          } else {
-            Toast.hideSearch();
-          }
-        }
-
-        var hm = r.data.has_more;
-        var hasMore = (hm === true) || (hm === 1) || (hm === '1');
-        renderFiles(pageState.files, pageState.total, terms, hasMore);
+        renderFiles(pageState.files, pageState.total, terms, truthyHasMore(r.data.has_more));
       }
 
       return r.data;
@@ -2117,8 +2170,7 @@
 
           next = Number(pageState.offset || 0);
 
-          var hm = resp.has_more;
-          lastHasMore = (hm === true) || (hm === 1) || (hm === '1');
+          lastHasMore = truthyHasMore(resp.has_more);
 
           if (pageState.files.length >= desired) return null;
           if (pageState.files.length >= Number(pageState.total || 0)) return null;
@@ -2137,22 +2189,7 @@
         var terms = splitTerms(query.q || '');
         updateCounts(pageState.files.length, pageState.total);
 
-        var hasFilter = ((query.q && query.q.trim()) || query.from || query.to || (query.flags && query.flags !== 'all'));
-        if (hasFilter) {
-          if (pageState.total > 0) {
-            Toast.showResults(
-              pageState.files.length,
-              pageState.total,
-              queryKey() + '|n=' + pageState.total + '|shown=' + pageState.files.length,
-              { append:false, ttl:2000 }
-            );
-          } else {
-            Toast.hideSearch();
-          }
-        } else {
-          Toast.hideSearch();
-        }
-
+        updateSearchToastForCurrentQuery(pageState.files.length, pageState.total, false, 0);
         renderFiles(pageState.files, pageState.total, terms, !!lastHasMore);
         return null;
       });
@@ -2172,6 +2209,8 @@
     return fetchListSafe(pageState.offset, !reset, 'Index', 'Could not load list (network/server error).');
   }
 
+  var __mcWarnTextRe = /could not be removed|some .* could not/i;
+
   /* =========================
      ACTIONS (server calls)
      ========================= */
@@ -2182,7 +2221,7 @@
 
     function isWarnText(s){
       s = String(s || '');
-      return /could not be removed|some .* could not/i.test(s);
+      return __mcWarnTextRe.test(s);
     }
 
     var hasOk = okMsgs.length > 0;
@@ -2255,9 +2294,12 @@
         __busyTok = UI.busyAcquire('rebuild');
 
       } else if (actionName === 'delete_all') {
-        // disable ONLY Delete All and show warning working toast
-        setEnabled(DOM.buttons.deleteAll, false);
+        // global op: acquire busy token so UI blocks uniformly
         Toast.workingWarning('Deleting all', 'Deleting all files...');
+        __busyTok = UI.busyAcquire('delete-all');
+
+        // optional extra safety: also disable the button itself immediately
+        setEnabled(DOM.buttons.deleteAll, false);
 
       } else if (actionName === 'delete_one' && fileName) {
         RowBusy.set(fileName, true);
@@ -2321,8 +2363,8 @@
           .finally(function(){
             if (__mcNavigating) return;
 
-            // ALWAYS end rebuild busy-state on completion (success or error)
-            if (isRebuild) {
+            // ALWAYS end global busy-state on completion (success or error)
+            if (isRebuild || actionName === 'delete_all') {
               try { UI.busyRelease(__busyTok); } catch (e0) {}
               __busyTok = 0;
             }
@@ -2344,10 +2386,6 @@
   /* =========================
      UPLOAD WITH PROGRESS
      ========================= */
-  function setPctClassUpload(el, pct){
-    setPctClass(el, pct);
-  }
-
   function summarizeUploadOk(okMsgs){
     okMsgs = Array.isArray(okMsgs) ? okMsgs : [];
     var uploaded = [];
@@ -2394,11 +2432,12 @@
     function setProgress(pct){
       pct = Math.max(0, Math.min(100, pct));
       wrap.classList.remove('d-none');
-      setPctClassUpload(bar, pct);
+      setPctClass(bar, pct);
       bar.textContent = pct + '%';
     }
+
     function resetProgress(){
-      setPctClassUpload(bar, 0);
+      setPctClass(bar, 0);
       bar.textContent = '0%';
       wrap.classList.add('d-none');
     }
@@ -2832,15 +2871,15 @@
 
   /* =========================
      INIT
-     ========================= */  
-  
+     ========================= */    
   function initIndexCheckAndRebuild(){
     // 1) Check Index button => refresh page (server re-checks drift)
     if (DOM.buttons.checkIndex) {
       L.on(DOM.buttons.checkIndex, 'click', function(){
-        // allow check even if hard-locked (that’s the whole point)
+        // allowed even when hard-locked; only blocked when busy
         if (UI.getBusy()) return;
-        refreshPageForCheckIndex();
+        CheckIndexFlow.begin();
+        refreshStats();
       });
     }
 
@@ -2892,11 +2931,16 @@
       };
     }
 
-    var onType = debounce(function(){
-      if (Guard.blockIf({ hard:true })) return;
+    function runUserQueryFromInputs(){
+      // uniform: same 3 calls everywhere
       Toast.noteUserQuery();
       readInputsIntoQuery();
       runQuery(true);
+    }
+
+    var onType = debounce(function(){
+      if (Guard.blockIf({ hard:true })) return;
+      runUserQueryFromInputs();
     }, 160);
 
     if (DOM.search.q) L.on(DOM.search.q, 'input', onType);
@@ -2904,18 +2948,14 @@
     if (DOM.search.from) {
       L.on(DOM.search.from, 'change', function(){
         if (Guard.blockIf({ hard:true })) return;
-        Toast.noteUserQuery();
-        readInputsIntoQuery();
-        runQuery(true);
+        runUserQueryFromInputs();
       });
     }
 
     if (DOM.search.to) {
       L.on(DOM.search.to, 'change', function(){
         if (Guard.blockIf({ hard:true })) return;
-        Toast.noteUserQuery();
-        readInputsIntoQuery();
-        runQuery(true);
+        runUserQueryFromInputs();
       });
     }
 
@@ -2925,6 +2965,7 @@
       var item = t.closest('[data-flag]');
       if (!item) return;
       if (Guard.blockIf({ hard:true })) return;
+
       var v = String(item.getAttribute('data-flag') || 'all');
       Toast.noteUserQuery();
       setFlagsUI(v, false);
@@ -3005,15 +3046,12 @@
   }
 
   function initInitialPaint(){
-    CheckIndexFlow.detect();
-    CheckIndexFlow.beginIfNeeded();
 
     // First-paint stats application (same path as ajax=stats)
     syncStatsFrom({
-      index_changed: Number(BOOT.index_changed || 0),
-      index_must_rebuild: Number(BOOT.index_must_rebuild || 0),
-      index_forced: Number(BOOT.index_forced || 0),
-      index_missing: Number(BOOT.index_missing || 0),
+      idx_blocked: Number(BOOT.idx_blocked || 0),
+      idx_missing: Number(BOOT.idx_missing || 0),
+      idx_known:   Number(BOOT.idx_known || 0),
       total_files: Number(BOOT.totalFiles || 0),
       total_human: (
         DOM.footerTotal

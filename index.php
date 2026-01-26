@@ -46,6 +46,8 @@ $MAX_FILE_HUMAN = format_bytes($MAX_FILE_BYTES);
 $MAX_POST_HUMAN = format_bytes($MAX_POST_BYTES);
 
 $isAjax = mc_is_ajax();
+$baseUri  = mc_base_uri();
+$indexUrl = ($baseUri === '' ? '' : $baseUri) . '/index.php';
 
 /* =========================
    INSTANCE / CONFIG
@@ -116,105 +118,91 @@ if (!$sharedComplete) {
     }
 }
 
-$flags = mc_index_flags($CACHE_DIR, $UPLOAD_DIR);
-$fileIndexMissing  = $flags['missing'];
-$indexDriftKnown   = $flags['known'];
-$indexNeedsRebuild = $flags['must'];
-$indexMustRebuild = (bool)$indexNeedsRebuild;
-$indexForced = false;
+$idx = mc_index_state($CACHE_DIR, $UPLOAD_DIR);
+$idx_blocked = (int)$idx['idx_blocked'];
+$idx_missing = (int)$idx['idx_missing'];
+$idx_known   = (int)$idx['idx_known'];
 
-/* JSON stats endpoint */
-if ($_SERVER['REQUEST_METHOD'] === 'GET' && (string)($_GET['ajax'] ?? '') === 'stats') {
-    header('Content-Type: application/json; charset=utf-8');
-    header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+/* =========================
+   GET AJAX ROUTER
+   ========================= */
+if ($_SERVER['REQUEST_METHOD'] === 'GET') {
+    $ajax = (string)($_GET['ajax'] ?? '');
 
-    $flagsS = mc_index_flags($CACHE_DIR, $UPLOAD_DIR);
+    if ($ajax === 'stats') {
+        $state = mc_index_state($CACHE_DIR, $UPLOAD_DIR);
+        $idxNow = file_index_load($CACHE_DIR);
 
-    // Always load fresh index for stats (reflects disk/cache after other requests)
-    $idxNow = file_index_load($CACHE_DIR);
+        $stats = mc_stats_payload($state, $idxNow);
 
-    $totalBytes = mc_index_total_bytes($idxNow);
+        // HARD: never let stats payload drop/override the guard flags
+        $stats['idx_blocked'] = (int)($state['idx_blocked'] ?? 0);
+        $stats['idx_missing'] = (int)($state['idx_missing'] ?? 0);
+        $stats['idx_known']   = (int)($state['idx_known'] ?? 0);
 
-    echo json_encode([
-        'ok' => true,
-
-        // drift/missing index detection (UI will block actions)
-        'index_changed' => ($flagsS['must'] ? 1 : 0),
-        'index_must_rebuild' => ($flagsS['must'] ? 1 : 0),
-        'index_changed_known' => ($flagsS['known'] ? 1 : 0),
-        'index_missing' => ($flagsS['missing'] ? 1 : 0),
-        'index_forced' => 0,
-
-        'total_files' => count($idxNow),
-        'total_bytes' => $totalBytes,
-        'total_human' => format_bytes($totalBytes),
-    ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-
-    exit;
-}
-
-/* JSON paged list endpoint */
-if ($_SERVER['REQUEST_METHOD'] === 'GET' && (string)($_GET['ajax'] ?? '') === 'list') {
-    header('Content-Type: application/json; charset=utf-8');
-    header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
-
-    $q = (string)($_GET['q'] ?? '');
-    $from = parse_ymd((string)($_GET['from'] ?? ''), false);
-    $to   = parse_ymd((string)($_GET['to'] ?? ''), true);
-
-    $qFlags = (string)($_GET['flags'] ?? 'all');
-    if ($qFlags !== 'all' && $qFlags !== 'shared') $qFlags = 'all';
-
-    $offset = (int)($_GET['offset'] ?? 0);
-    if ($offset < 0) $offset = 0;
-
-    $limit = (int)($_GET['limit'] ?? $PAGE_SIZE);
-    if ($limit < 1) $limit = $PAGE_SIZE;
-    if ($limit > 200) $limit = 200;
-
-    if ($qFlags === 'shared' && $sharedComplete && is_array($sharedSet) && count($sharedSet) === 0) {
-        echo json_encode([
+        mc_json_send([
             'ok' => true,
-            'files' => [],
-            'count' => 0,
-            'total' => 0,
-            'offset' => $offset,
-            'limit' => $limit,
-            'has_more' => false,
-            'flags_shared_index' => true,
-        ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-        exit;
+            'stats' => $stats,
+        ]);
     }
 
-    // If we have a complete shared index, always pass it (fast in-memory shared checks).
-    // If it's not complete, pass null (will fall back to disk byname checks when needed).
-    $useSharedSet = ($sharedComplete && is_array($sharedSet)) ? $sharedSet : null;
+    if ($ajax === 'list') {
+        $q = (string)($_GET['q'] ?? '');
+        $from = parse_ymd((string)($_GET['from'] ?? ''), false);
+        $to   = parse_ymd((string)($_GET['to'] ?? ''), true);
 
-    [$page, $totalMatches] = query_files_paged(
-        $fileIndex,
-        $q,
-        $from,
-        $to,
-        $qFlags,
-        $offset,
-        $limit,
-        $BY_DIR,
-        $useSharedSet
-    );
+        $qFlags = (string)($_GET['flags'] ?? 'all');
+        if ($qFlags !== 'all' && $qFlags !== 'shared') $qFlags = 'all';
 
-    $hasMore = ($offset + count($page)) < $totalMatches;
+        $offset = (int)($_GET['offset'] ?? 0);
+        if ($offset < 0) $offset = 0;
 
-    echo json_encode([
-        'ok' => true,
-        'files' => $page,
-        'count' => count($page),
-        'total' => $totalMatches,
-        'offset' => $offset,
-        'limit' => $limit,
-        'has_more' => $hasMore,
-        'flags_shared_index' => ($qFlags === 'shared' && $useSharedSet !== null),
-    ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-    exit;
+        $limit = (int)($_GET['limit'] ?? $PAGE_SIZE);
+        if ($limit < 1) $limit = $PAGE_SIZE;
+        if ($limit > 200) $limit = 200;
+
+        if ($qFlags === 'shared' && $sharedComplete && is_array($sharedSet) && count($sharedSet) === 0) {
+            mc_json_send([
+                'ok' => true,
+                'files' => [],
+                'count' => 0,
+                'total' => 0,
+                'offset' => $offset,
+                'limit' => $limit,
+                'has_more' => false,
+                'flags_shared_index' => true,
+            ]);
+        }
+
+        // If we have a complete shared index, always pass it (fast in-memory shared checks).
+        // If it's not complete, pass null (will fall back to disk byname checks when needed).
+        $useSharedSet = ($sharedComplete && is_array($sharedSet)) ? $sharedSet : null;
+
+        [$page, $totalMatches] = query_files_paged(
+            $fileIndex,
+            $q,
+            $from,
+            $to,
+            $qFlags,
+            $offset,
+            $limit,
+            $BY_DIR,
+            $useSharedSet
+        );
+
+        $hasMore = ($offset + count($page)) < $totalMatches;
+
+        mc_json_send([
+            'ok' => true,
+            'files' => $page,
+            'count' => count($page),
+            'total' => $totalMatches,
+            'offset' => $offset,
+            'limit' => $limit,
+            'has_more' => $hasMore,
+            'flags_shared_index' => ($qFlags === 'shared' && $useSharedSet !== null),
+        ]);
+    }
 }
 
 /* =========================
@@ -226,40 +214,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = (string)($_POST['action'] ?? '');
 
     // HARD GUARD: never mutate when index/baseline is unsafe.
-    $guardFlags = mc_index_flags($CACHE_DIR, $UPLOAD_DIR);
+    $guard = mc_index_state($CACHE_DIR, $UPLOAD_DIR);
 
-    if ($guardFlags['must'] && $action !== 'rebuild_index' && $action !== 'storage_scan') {
+    if (!empty($guard['idx_blocked']) && $action !== 'rebuild_index') {
         $ok = [];
         $err = ['Index changed or baseline missing. Please use Rebuild Index first.'];
         $redirectTo = '';
 
-        $totalBytes = mc_index_total_bytes($fileIndex);
-
         if ($isAjax) {
-            header('Content-Type: application/json; charset=utf-8');
-            header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
-            echo json_encode([
-                'ok' => $ok,
-                'err' => $err,
-                'redirect' => $redirectTo,
-                'stats' => [
-                  // IMPORTANT: use these exact keys (match app.js applyStats)
-                  'index_changed' => 1,
-                  'index_must_rebuild' => 1,
-                  'index_changed_known' => ($guardFlags['known'] ? 1 : 0),
-                  'index_missing' => ($guardFlags['missing'] ? 1 : 0),
-                  'index_forced' => 1,
-
-                  'total_files' => count($fileIndex),
-                  'total_bytes' => $totalBytes,
-                  'total_human' => format_bytes($totalBytes),
-                ],
-            ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+            mc_ajax_respond(
+                $ok,
+                $err,
+                $redirectTo,
+                [],
+                mc_stats_payload($guard, $fileIndex)
+            );
             exit;
         }
 
         foreach ($err as $m) flash_add('err', $m);
-        header('Location: index.php');
+        header('Location: ' . $indexUrl, true, 303);
         exit;
     }
 
@@ -271,452 +245,422 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $sharedChanged = false;
     $uploadsChanged = false; // internal change to /uploads -> refresh baseline fingerprint
 
-    if ($action === 'upload') {
-        if (!isset($_FILES['files'])) {
-            $err[] = 'No files received.';
-        } else {
-            $files = $_FILES['files'];
-            $count = is_array($files['name']) ? count($files['name']) : 0;
+    switch ($action) {
 
-            // Quota enforcement: max number of files in uploads (0 => unlimited)
-            if ($QUOTA_FILES > 0) {
-                $currentCount = count($fileIndex);
+        case 'upload':
+            if (!isset($_FILES['files'])) {
+                $err[] = 'No files received.';
+            } else {
+                $files = $_FILES['files'];
+                $count = is_array($files['name']) ? count($files['name']) : 0;
 
-                if ($currentCount >= $QUOTA_FILES) {
-                    $err[] = 'Quota reached (' . $QUOTA_FILES . ' files). Delete files to upload new ones.';
-                } elseif ($count > ($QUOTA_FILES - $currentCount)) {
-                    $left = $QUOTA_FILES - $currentCount;
-                    $err[] = 'Quota allows ' . $left . ' more file(s). You selected ' . $count . '.';
-                }
-            }
+                // Quota enforcement: max number of files in uploads (0 => unlimited)
+                if ($QUOTA_FILES > 0) {
+                    $currentCount = count($fileIndex);
 
-            if ($MAX_FILE_UPLOADS > 0 && $count > $MAX_FILE_UPLOADS) {
-                $err[] = 'Too many files selected (' . $count . '). Max allowed is ' . $MAX_FILE_UPLOADS . '.';
-            }
-
-            // If any validation error so far, do not proceed into total/loop
-            if (!$err) {
-                $total = 0;
-                for ($i = 0; $i < $count; $i++) {
-                    $total += (int)($files['size'][$i] ?? 0);
+                    if ($currentCount >= $QUOTA_FILES) {
+                        $err[] = 'Quota reached (' . $QUOTA_FILES . ' files). Delete files to upload new ones.';
+                    } elseif ($count > ($QUOTA_FILES - $currentCount)) {
+                        $left = $QUOTA_FILES - $currentCount;
+                        $err[] = 'Quota allows ' . $left . ' more file(s). You selected ' . $count . '.';
+                    }
                 }
 
-                if ($count > 0 && $total > $MAX_POST_BYTES) {
-                    $err[] = 'Selected files total ' . format_bytes($total) . ' exceeds server limit ' . format_bytes($MAX_POST_BYTES) . '.';
-                } else {
+                if ($MAX_FILE_UPLOADS > 0 && $count > $MAX_FILE_UPLOADS) {
+                    $err[] = 'Too many files selected (' . $count . '). Max allowed is ' . $MAX_FILE_UPLOADS . '.';
+                }
+
+                // If any validation error so far, do not proceed into total/loop
+                if (!$err) {
+                    $total = 0;
                     for ($i = 0; $i < $count; $i++) {
-                        $orig  = (string)$files['name'][$i];
-                        $tmp   = (string)$files['tmp_name'][$i];
-                        $upErr = (int)$files['error'][$i];
-                        $size  = (int)$files['size'][$i];
+                        $total += (int)($files['size'][$i] ?? 0);
+                    }
 
-                        if ($upErr === UPLOAD_ERR_NO_FILE) continue;
-                        if ($upErr !== UPLOAD_ERR_OK) { $err[] = $orig . ': upload error (' . $upErr . ').'; continue; }
-                        if ($size <= 0) { $err[] = $orig . ': empty file.'; continue; }
-                        if ($size > $MAX_FILE_BYTES) { $err[] = $orig . ': too large (max ' . format_bytes($MAX_FILE_BYTES) . ').'; continue; }
+                    if ($count > 0 && $total > $MAX_POST_BYTES) {
+                        $err[] = 'Selected files total ' . format_bytes($total) . ' exceeds server limit ' . format_bytes($MAX_POST_BYTES) . '.';
+                    } else {
+                        for ($i = 0; $i < $count; $i++) {
+                            $orig  = (string)$files['name'][$i];
+                            $tmp   = (string)$files['tmp_name'][$i];
+                            $upErr = (int)$files['error'][$i];
+                            $size  = (int)$files['size'][$i];
 
-                        $base = safe_basename($orig);
-                        $base = clamp_filename($base);
-                        if ($base === '' || (isset($base[0]) && $base[0] === '.')) { $err[] = 'Invalid filename: ' . $orig; continue; }
+                            if ($upErr === UPLOAD_ERR_NO_FILE) continue;
+                            if ($upErr !== UPLOAD_ERR_OK) { $err[] = $orig . ': upload error (' . $upErr . ').'; continue; }
+                            if ($size <= 0) { $err[] = $orig . ': empty file.'; continue; }
+                            if ($size > $MAX_FILE_BYTES) { $err[] = $orig . ': too large (max ' . format_bytes($MAX_FILE_BYTES) . ').'; continue; }
 
-                        $target = $UPLOAD_DIR . '/' . $base;
+                            $base = safe_basename($orig);
+                            $base = clamp_filename($base);
+                            if ($base === '' || (isset($base[0]) && $base[0] === '.')) { $err[] = 'Invalid filename: ' . $orig; continue; }
 
-                        if (file_exists($target)) {
-                            $ext  = pathinfo($base, PATHINFO_EXTENSION);
-                            $name = pathinfo($base, PATHINFO_FILENAME);
+                            $target = $UPLOAD_DIR . '/' . $base;
 
-                            $n = 1;
-                            do {
-                                $candidateBase = $name . '-' . $n . ($ext !== '' ? '.' . $ext : '');
-                                $candidateBase = clamp_filename($candidateBase);
-                                $target = $UPLOAD_DIR . '/' . $candidateBase;
-                                $n++;
-                            } while (file_exists($target) && $n < 10000);
+                            if (file_exists($target)) {
+                                $ext  = pathinfo($base, PATHINFO_EXTENSION);
+                                $name = pathinfo($base, PATHINFO_FILENAME);
 
-                            $base = basename($target);
+                                $n = 1;
+                                do {
+                                    $candidateBase = $name . '-' . $n . ($ext !== '' ? '.' . $ext : '');
+                                    $candidateBase = clamp_filename($candidateBase);
+                                    $target = $UPLOAD_DIR . '/' . $candidateBase;
+                                    $n++;
+                                } while (file_exists($target) && $n < 10000);
+
+                                $base = basename($target);
+                            }
+
+                            if (!is_uploaded_file($tmp)) { $err[] = $orig . ': invalid upload source.'; continue; }
+                            if (!@move_uploaded_file($tmp, $target)) { $err[] = $orig . ': failed to save.'; continue; }
+
+                            @chmod($target, 0644);
+
+                            $mtime = (int)(filemtime($target) ?: time());
+                            $actualSize = (int)(filesize($target) ?: $size);
+
+                            $fileIndex = file_index_upsert($fileIndex, [
+                                'name' => $base,
+                                'size' => $actualSize,
+                                'mtime' => $mtime,
+                            ]);
+                            $indexChanged = true;
+                            $uploadsChanged = true;
+
+                            $ok[] = 'Uploaded: ' . $base;
                         }
 
-                        if (!is_uploaded_file($tmp)) { $err[] = $orig . ': invalid upload source.'; continue; }
-                        if (!@move_uploaded_file($tmp, $target)) { $err[] = $orig . ': failed to save.'; continue; }
+                        if (!$ok && !$err) $err[] = 'No files selected.';
+                    }
+                }
+            }
+            break;
 
-                        @chmod($target, 0644);
+        case 'delete_one':
+            $name = safe_basename((string)($_POST['name'] ?? ''));
+            if ($name === '' || (isset($name[0]) && $name[0] === '.')) {
+                $err[] = 'Invalid file.';
+            } else {
+                $path = $UPLOAD_DIR . '/' . $name;
+                if (!is_file($path)) {
+                    $err[] = 'File not found.';
+                } else {
+                    $wasSharedBefore = is_shared_file($BY_DIR, $name);
 
-                        $mtime = (int)(filemtime($target) ?: time());
-                        $actualSize = (int)(filesize($target) ?: $size);
+                    if (@unlink($path)) {
+                        $ok[] = 'Deleted: ' . $name;
 
-                        $fileIndex = file_index_upsert($fileIndex, [
-                            'name' => $base,
-                            'size' => $actualSize,
-                            'mtime' => $mtime,
-                        ]);
+                        $fileIndex = file_index_remove_name($fileIndex, $name);
                         $indexChanged = true;
                         $uploadsChanged = true;
 
-                        $ok[] = 'Uploaded: ' . $base;
-                    }
+                        [$ldel, $lfail] = delete_links_for_filename($LINK_DIR, $BY_DIR, $name);
 
-                    if (!$ok && !$err) $err[] = 'No files selected.';
+                        if ($wasSharedBefore && is_array($sharedSet)) {
+                            shared_index_remove($sharedSet, $name);
+                            $sharedChanged = true;
+                        }
+
+                        if ($ldel > 0 || $wasSharedBefore) $ok[] = 'Removed shared record(s) for this file.';
+                        if ($lfail > 0) $err[] = 'Failed to remove ' . $lfail . ' record(s).';
+                    } else {
+                        $err[] = 'Failed to delete: ' . $name;
+                    }
                 }
             }
-        }
-    }
-    elseif ($action === 'delete_one') {
-        $name = safe_basename((string)($_POST['name'] ?? ''));
-        if ($name === '' || (isset($name[0]) && $name[0] === '.')) {
-            $err[] = 'Invalid file.';
-        } else {
-            $path = $UPLOAD_DIR . '/' . $name;
-            if (!is_file($path)) {
-                $err[] = 'File not found.';
+            break;
+
+        case 'delete_all':
+            $diskFiles = mc_uploads_list_files($UPLOAD_DIR);
+            if (!$diskFiles) {
+                $err[] = 'No files to delete.';
             } else {
-                $wasSharedBefore = is_shared_file($BY_DIR, $name);
+                $deleted = 0; $failed = 0;
 
-                if (@unlink($path)) {
-                    $ok[] = 'Deleted: ' . $name;
+                foreach ($diskFiles as $fn) {
+                    $p = $UPLOAD_DIR . '/' . $fn;
+                    if (@unlink($p)) $deleted++;
+                    else $failed++;
+                }
 
-                    $fileIndex = file_index_remove_name($fileIndex, $name);
-                    $indexChanged = true;
+                $ok[] = 'Deleted ' . $deleted . ' file(s).';
+                if ($failed) $err[] = 'Failed to delete ' . $failed . ' file(s).';
+                if ($failed) {
+                    $err[] = 'Some files could not be removed from disk. Index will require rebuild after you fix permissions.';
+                }
+
+                // If we failed to delete anything, keep index/baseline conservative:
+                $fileIndex = [];
+                $indexChanged = true;
+
+                // Only refresh baseline when disk delete succeeded fully.
+                if ($failed === 0) {
                     $uploadsChanged = true;
+                } else {
+                    $uploadsChanged = false;
+                }
 
-                    [$ldel, $lfail] = delete_links_for_filename($LINK_DIR, $BY_DIR, $name);
+                [$txtDel, $jsonDel, $lFail] = delete_all_links($LINK_DIR, $BY_DIR);
 
-                    if ($wasSharedBefore && is_array($sharedSet)) {
-                        shared_index_remove($sharedSet, $name);
-                        $sharedChanged = true;
+                $sharedSet = [];
+                $sharedComplete = true; // after deleting all links, shared index is definitely complete and empty
+                $sharedChanged = true;
+
+                $linksRemoved = min($txtDel, $jsonDel);
+                if ($linksRemoved > 0) $ok[] = 'Removed ' . $linksRemoved . ' shared link(s).';
+
+                if ($txtDel !== $jsonDel) {
+                    $ok[] = 'Cleanup note: removed ' . $txtDel . ' index record(s) and ' . $jsonDel . ' link file(s).';
+                }
+                if ($lFail > 0) $err[] = 'Failed to remove ' . $lFail . ' shared record(s).';
+            }
+            break;
+
+        case 'storage_scan':
+            // Admin tool: scan biggest files (AJAX only)
+            if (!$isAjax) {
+                $err[] = 'Storage scan is available only via AJAX.';
+            } else {
+                // Load fresh index for scan (reflect latest disk/index state)
+                $idxNow = file_index_load($CACHE_DIR);
+
+                $limit = (int)($_POST['limit'] ?? 200);
+                if ($limit < 10) $limit = 10;
+                if ($limit > 500) $limit = 500;
+
+                // Build "is shared" fast when possible
+                $useSharedSetScan = ($sharedComplete && is_array($sharedSet)) ? $sharedSet : null;
+
+                // Sort by size desc (index already has size/mtime)
+                $rows = array_values($idxNow);
+                usort($rows, function($a, $b){
+                    $sa = (int)($a['size'] ?? 0);
+                    $sb = (int)($b['size'] ?? 0);
+                    if ($sa === $sb) return 0;
+                    return ($sa > $sb) ? -1 : 1;
+                });
+
+                $items = [];
+                $n = min($limit, count($rows));
+
+                for ($i = 0; $i < $n; $i++) {
+                    $r = $rows[$i];
+                    $nm = (string)($r['name'] ?? '');
+                    if ($nm === '') continue;
+
+                    $isShared = false;
+                    if (is_array($useSharedSetScan)) {
+                        $isShared = shared_index_has($useSharedSetScan, $nm);
+                    } else {
+                        $isShared = is_shared_file($BY_DIR, $nm);
                     }
 
-                    if ($ldel > 0 || $wasSharedBefore) $ok[] = 'Removed shared record(s) for this file.';
-                    if ($lfail > 0) $err[] = 'Failed to remove ' . $lfail . ' record(s).';
-                } else {
-                    $err[] = 'Failed to delete: ' . $name;
+                    $items[] = [
+                        'name'   => $nm,
+                        'size'   => (int)($r['size'] ?? 0),
+                        'mtime'  => (int)($r['mtime'] ?? 0),
+                        'shared' => $isShared ? 1 : 0,
+                    ];
                 }
+
+                $ok[] = 'Storage scan completed.';
+                $idxNowState = mc_index_state($CACHE_DIR, $UPLOAD_DIR);
+
+                mc_ajax_respond(
+                    $ok,
+                    $err,
+                    '',
+                    ['items' => $items],
+                    mc_stats_payload($idxNowState, $idxNow)
+                );
+                exit;
             }
-        }
-    }
-    elseif ($action === 'delete_all') {
-        $diskFiles = mc_uploads_list_files($UPLOAD_DIR);
-        if (!$diskFiles) {
-            $err[] = 'No files to delete.';
-        } else {
-            $deleted = 0; $failed = 0;
+            break;
 
-            foreach ($diskFiles as $fn) {
-                $p = $UPLOAD_DIR . '/' . $fn;
-                if (@unlink($p)) $deleted++;
-                else $failed++;
-            }
-
-            $ok[] = 'Deleted ' . $deleted . ' file(s).';
-            if ($failed) $err[] = 'Failed to delete ' . $failed . ' file(s).';
-            if ($failed) {
-                $err[] = 'Some files could not be removed from disk. Index will require rebuild after you fix permissions.';
-            }
-
-            // If we failed to delete anything, keep index/baseline conservative:
-            // - still clear index UI-side (so user sees intent), BUT force rebuild via drift
-            //   by NOT updating baseline later.
-            $fileIndex = [];
-            $indexChanged = true;
-
-            // Only refresh baseline when disk delete succeeded fully.
-            if ($failed === 0) {
-                $uploadsChanged = true;
+        case 'storage_delete':
+            // Admin tool: delete selected (AJAX only)
+            if (!$isAjax) {
+                $err[] = 'Storage delete is available only via AJAX.';
             } else {
-                $uploadsChanged = false;
-            }
+                $names = $_POST['names'] ?? [];
+                if (!is_array($names)) $names = [];
 
-            [$txtDel, $jsonDel, $lFail] = delete_all_links($LINK_DIR, $BY_DIR);
+                $deleted = 0;
+                $failed = 0;
 
-            $sharedSet = [];
-            $sharedComplete = true; // after deleting all links, shared index is definitely complete and empty
-            $sharedChanged = true;
+                foreach ($names as $raw) {
+                    $name = safe_basename((string)$raw);
+                    if ($name === '' || (isset($name[0]) && $name[0] === '.')) {
+                        $failed++;
+                        $err[] = 'Invalid filename.';
+                        continue;
+                    }
 
-            $linksRemoved = min($txtDel, $jsonDel);
-            if ($linksRemoved > 0) $ok[] = 'Removed ' . $linksRemoved . ' shared link(s).';
+                    $path = $UPLOAD_DIR . '/' . $name;
+                    if (!is_file($path)) {
+                        $failed++;
+                        $err[] = 'File not found: ' . $name;
+                        continue;
+                    }
 
-            if ($txtDel !== $jsonDel) {
-                $ok[] = 'Cleanup note: removed ' . $txtDel . ' index record(s) and ' . $jsonDel . ' link file(s).';
-            }
-            if ($lFail > 0) $err[] = 'Failed to remove ' . $lFail . ' shared record(s).';
-        }
-    }
-    elseif ($action === 'storage_scan') {
-        // Admin tool: scan biggest files (AJAX only)
-        if (!$isAjax) {
-            $err[] = 'Storage scan is available only via AJAX.';
-        } else {
-            // Load fresh index for scan (reflect latest disk/index state)
-            $idxNow = file_index_load($CACHE_DIR);
+                    $wasSharedBefore = is_shared_file($BY_DIR, $name);
 
-            $limit = (int)($_POST['limit'] ?? 200);
-            if ($limit < 10) $limit = 10;
-            if ($limit > 500) $limit = 500;
+                    if (@unlink($path)) {
+                        $deleted++;
+                        $ok[] = 'Deleted: ' . $name;
 
-            // Build "is shared" fast when possible
-            $useSharedSetScan = ($sharedComplete && is_array($sharedSet)) ? $sharedSet : null;
+                        $fileIndex = file_index_remove_name($fileIndex, $name);
+                        $indexChanged = true;
+                        $uploadsChanged = true;
 
-            // Sort by size desc (index already has size/mtime)
-            $rows = array_values($idxNow);
-            usort($rows, function($a, $b){
-                $sa = (int)($a['size'] ?? 0);
-                $sb = (int)($b['size'] ?? 0);
-                if ($sa === $sb) return 0;
-                return ($sa > $sb) ? -1 : 1;
-            });
+                        [$ldel, $lfail] = delete_links_for_filename($LINK_DIR, $BY_DIR, $name);
 
-            $items = [];
-            $n = min($limit, count($rows));
+                        if ($wasSharedBefore && is_array($sharedSet)) {
+                            shared_index_remove($sharedSet, $name);
+                            $sharedChanged = true;
+                        }
 
-            for ($i = 0; $i < $n; $i++) {
-                $r = $rows[$i];
-                $nm = (string)($r['name'] ?? '');
-                if ($nm === '') continue;
+                        if ($ldel > 0 || $wasSharedBefore) $ok[] = 'Removed shared record(s) for: ' . $name;
+                        if ($lfail > 0) $err[] = 'Failed to remove ' . $lfail . ' shared record(s) for: ' . $name;
 
-                $isShared = false;
-                if (is_array($useSharedSetScan)) {
-                    // shared set is keyed by sha256(filename) (shared_index_has handles it)
-                    $isShared = shared_index_has($useSharedSetScan, $nm);
-                } else {
-                    // fallback to disk byname check
-                    $isShared = is_shared_file($BY_DIR, $nm);
+                    } else {
+                        $failed++;
+                        $err[] = 'Failed to delete: ' . $name;
+                    }
                 }
 
-                $items[] = [
-                    'name'   => $nm,
-                    'size'   => (int)($r['size'] ?? 0),
-                    'mtime'  => (int)($r['mtime'] ?? 0),
-                    'shared' => $isShared ? 1 : 0,
-                ];
-            }
+                // If anything failed, DO NOT refresh baseline (force drift rebuild if needed)
+                if ($failed > 0) $uploadsChanged = false;
 
-            $ok[] = 'Storage scan completed.';
-            $flagsNow = mc_index_flags($CACHE_DIR, $UPLOAD_DIR);
-            $totalBytes = mc_index_total_bytes($idxNow);
-
-            header('Content-Type: application/json; charset=utf-8');
-            header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
-
-            echo json_encode([
-                'ok' => $ok,
-                'err' => $err,
-                'redirect' => '',
-                'data' => [
-                    'items' => $items,
-                ],
-                'stats' => [
-                    'index_changed' => ($flagsNow['must'] ? 1 : 0),
-                    'index_must_rebuild' => ($flagsNow['must'] ? 1 : 0),
-                    'index_changed_known' => ($flagsNow['known'] ? 1 : 0),
-                    'index_missing' => ($flagsNow['missing'] ? 1 : 0),
-                    'index_forced' => 0,
-
-                    'total_files' => count($idxNow),
-                    'total_bytes' => $totalBytes,
-                    'total_human' => format_bytes($totalBytes),
-                ],
-            ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-            exit;
-        }
-    }
-    elseif ($action === 'storage_delete') {
-        // Admin tool: delete selected (AJAX only)
-        if (!$isAjax) {
-            $err[] = 'Storage delete is available only via AJAX.';
-        } else {
-            $names = $_POST['names'] ?? [];
-            if (!is_array($names)) $names = [];
-
-            $deleted = 0;
-            $failed = 0;
-
-            foreach ($names as $raw) {
-                $name = safe_basename((string)$raw);
-                if ($name === '' || (isset($name[0]) && $name[0] === '.')) {
-                    $failed++;
-                    $err[] = 'Invalid filename.';
-                    continue;
+                // Persist changes BEFORE we re-load for the returned list
+                if ($uploadsChanged) {
+                    $fp = mc_uploads_signature_compute($UPLOAD_DIR);
+                    if ($fp) mc_uploads_fingerprint_save($CACHE_DIR, $fp);
                 }
 
+                if ($indexChanged) file_index_save($CACHE_DIR, $fileIndex);
+                if ($sharedChanged) {
+                    shared_index_save($CACHE_DIR, is_array($sharedSet) ? $sharedSet : [], $sharedComplete);
+                }
+
+                // Return the updated scan list (now consistent)
+                $idxNow = file_index_load($CACHE_DIR);
+                $useSharedSetScan = ($sharedComplete && is_array($sharedSet)) ? $sharedSet : null;
+
+                $rows = array_values($idxNow);
+                usort($rows, function($a, $b){
+                    $sa = (int)($a['size'] ?? 0);
+                    $sb = (int)($b['size'] ?? 0);
+                    if ($sa === $sb) return 0;
+                    return ($sa > $sb) ? -1 : 1;
+                });
+
+                $items = [];
+                $n = min(200, count($rows));
+                for ($i = 0; $i < $n; $i++) {
+                    $r = $rows[$i];
+                    $nm = (string)($r['name'] ?? '');
+                    if ($nm === '') continue;
+
+                    $isShared = false;
+                    if (is_array($useSharedSetScan)) $isShared = shared_index_has($useSharedSetScan, $nm);
+                    else $isShared = is_shared_file($BY_DIR, $nm);
+
+                    $items[] = [
+                        'name'   => $nm,
+                        'size'   => (int)($r['size'] ?? 0),
+                        'mtime'  => (int)($r['mtime'] ?? 0),
+                        'shared' => $isShared ? 1 : 0,
+                    ];
+                }
+
+                $afterState = mc_index_state($CACHE_DIR, $UPLOAD_DIR);
+
+                mc_ajax_respond(
+                    $ok,
+                    $err,
+                    '',
+                    [
+                        'items' => $items,
+                        'deleted' => $deleted,
+                        'failed' => $failed,
+                    ],
+                    mc_stats_payload($afterState, $idxNow)
+                );
+                exit;
+            }
+            break;
+
+        case 'unshare_one':
+            $name = safe_basename((string)($_POST['name'] ?? ''));
+            if ($name === '' || (isset($name[0]) && $name[0] === '.')) {
+                $err[] = 'Invalid file.';
+            } else {
                 $path = $UPLOAD_DIR . '/' . $name;
                 if (!is_file($path)) {
-                    $failed++;
-                    $err[] = 'File not found: ' . $name;
-                    continue;
-                }
-
-                $wasSharedBefore = is_shared_file($BY_DIR, $name);
-
-                if (@unlink($path)) {
-                    $deleted++;
-                    $ok[] = 'Deleted: ' . $name;
-
-                    $fileIndex = file_index_remove_name($fileIndex, $name);
-                    $indexChanged = true;
-                    $uploadsChanged = true;
+                    $err[] = 'File not found.';
+                } else {
+                    $wasSharedBefore = is_shared_file($BY_DIR, $name);
 
                     [$ldel, $lfail] = delete_links_for_filename($LINK_DIR, $BY_DIR, $name);
+
+                    if (!$wasSharedBefore && $ldel === 0 && $lfail === 0) {
+                        $ok[] = 'File was not shared: ' . $name;
+                    } else {
+                        if ($lfail === 0) {
+                            $ok[] = 'Shared link removed for: ' . $name;
+                        } else {
+                            $ok[] = 'Shared link partially removed for: ' . $name;
+                            $err[] = 'Some shared record(s) could not be removed.';
+                        }
+                    }
 
                     if ($wasSharedBefore && is_array($sharedSet)) {
                         shared_index_remove($sharedSet, $name);
                         $sharedChanged = true;
                     }
-
-                    if ($ldel > 0 || $wasSharedBefore) $ok[] = 'Removed shared record(s) for: ' . $name;
-                    if ($lfail > 0) $err[] = 'Failed to remove ' . $lfail . ' shared record(s) for: ' . $name;
-
-                } else {
-                    $failed++;
-                    $err[] = 'Failed to delete: ' . $name;
                 }
             }
+            break;
 
-            // If anything failed, DO NOT refresh baseline (force drift rebuild if needed)
-            if ($failed > 0) $uploadsChanged = false;
+        case 'rebuild_index':
+            // Rebuild BOTH file index + shared index + baseline fingerprint.
+            // This is the ONLY place where rebuild is allowed.
 
-            // Persist changes BEFORE we re-load for the returned list
-            if ($uploadsChanged) {
-                $fp = mc_uploads_signature_compute($UPLOAD_DIR);
-                if ($fp) mc_uploads_fingerprint_save($CACHE_DIR, $fp);
+            // Step 1: rebuild file index from disk
+            $rebuilt = file_index_rebuild_from_disk($UPLOAD_DIR);
+            file_index_save($CACHE_DIR, $rebuilt);
+            $fileIndex = $rebuilt;
+            $indexChanged = false; // already saved explicitly
+
+            // Step 2: rebuild shared set from disk
+            $rebuiltShared = shared_index_rebuild_from_disk($LINK_DIR, $BY_DIR, $UPLOAD_DIR);
+            $sharedSet = $rebuiltShared;
+            $sharedComplete = (is_dir($BY_DIR) && is_readable($BY_DIR));
+            shared_index_save($CACHE_DIR, $sharedSet, $sharedComplete);
+            $sharedChanged = true;
+
+            // Step 3: write baseline uploads fingerprint (v2) + strong sha (optional)
+            $fp = mc_uploads_signature_compute($UPLOAD_DIR);
+            if ($fp) {
+                $strong = mc_uploads_strong_sha256_compute($UPLOAD_DIR);
+                if ($strong !== '') $fp['strong_sha256'] = $strong;
+                mc_uploads_fingerprint_save($CACHE_DIR, $fp);
             }
 
-            if ($indexChanged) file_index_save($CACHE_DIR, $fileIndex);
-            if ($sharedChanged) {
-                shared_index_save($CACHE_DIR, is_array($sharedSet) ? $sharedSet : [], $sharedComplete);
-            }
+            $ok[] = 'Index rebuild completed.';
+            $ok[] = 'Files indexed: ' . count($fileIndex) . '. Shared records: ' . count($sharedSet) . '.';
+            break;
 
-            // Return the updated scan list (now consistent)
-            $idxNow = file_index_load($CACHE_DIR);
-            $useSharedSetScan = ($sharedComplete && is_array($sharedSet)) ? $sharedSet : null;
+        case 'reinstall':
+            $ok[] = 'Reconfigure: redirecting to installer…';
+            $redirectTo = ($baseUri === '' ? '' : $baseUri) . '/install.php';
+            break;
 
-            $rows = array_values($idxNow);
-            usort($rows, function($a, $b){
-                $sa = (int)($a['size'] ?? 0);
-                $sb = (int)($b['size'] ?? 0);
-                if ($sa === $sb) return 0;
-                return ($sa > $sb) ? -1 : 1;
-            });
-
-            $items = [];
-            $n = min(200, count($rows));
-            for ($i = 0; $i < $n; $i++) {
-                $r = $rows[$i];
-                $nm = (string)($r['name'] ?? '');
-                if ($nm === '') continue;
-
-                $isShared = false;
-                if (is_array($useSharedSetScan)) $isShared = shared_index_has($useSharedSetScan, $nm);
-                else $isShared = is_shared_file($BY_DIR, $nm);
-
-                $items[] = [
-                    'name'   => $nm,
-                    'size'   => (int)($r['size'] ?? 0),
-                    'mtime'  => (int)($r['mtime'] ?? 0),
-                    'shared' => $isShared ? 1 : 0,
-                ];
-            }
-
-            $afterFlags = mc_index_flags($CACHE_DIR, $UPLOAD_DIR);
-            $totalBytes = mc_index_total_bytes($fileIndex);
-
-            header('Content-Type: application/json; charset=utf-8');
-            header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
-
-            echo json_encode([
-                'ok' => $ok,
-                'err' => $err,
-                'redirect' => '',
-                'data' => [
-                    'items' => $items,
-                    'deleted' => $deleted,
-                    'failed' => $failed,
-                ],
-                'stats' => [
-                    'index_changed' => ($afterFlags['must'] ? 1 : 0),
-                    'index_must_rebuild' => ($afterFlags['must'] ? 1 : 0),
-                    'index_changed_known' => ($afterFlags['known'] ? 1 : 0),
-                    'index_missing' => ($afterFlags['missing'] ? 1 : 0),
-                    'index_forced' => 0,
-
-                    'total_files' => count($fileIndex),
-                    'total_bytes' => $totalBytes,
-                    'total_human' => format_bytes($totalBytes),
-                ],
-            ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-            exit;
-        }
-    }
-    elseif ($action === 'unshare_one') {
-        $name = safe_basename((string)($_POST['name'] ?? ''));
-        if ($name === '' || (isset($name[0]) && $name[0] === '.')) {
-            $err[] = 'Invalid file.';
-        } else {
-            $path = $UPLOAD_DIR . '/' . $name;
-            if (!is_file($path)) {
-                $err[] = 'File not found.';
-            } else {
-                $wasSharedBefore = is_shared_file($BY_DIR, $name);
-
-                [$ldel, $lfail] = delete_links_for_filename($LINK_DIR, $BY_DIR, $name);
-
-                if (!$wasSharedBefore && $ldel === 0 && $lfail === 0) {
-                    $ok[] = 'File was not shared: ' . $name;
-                } else {
-                    if ($lfail === 0) {
-                        $ok[] = 'Shared link removed for: ' . $name;
-                    } else {
-                        $ok[] = 'Shared link partially removed for: ' . $name;
-                        $err[] = 'Some shared record(s) could not be removed.';
-                    }
-                }
-
-                if ($wasSharedBefore && is_array($sharedSet)) {
-                    shared_index_remove($sharedSet, $name);
-                    $sharedChanged = true;
-                }
-            }
-        }
-    }
-    elseif ($action === 'rebuild_index') {
-        // Rebuild BOTH file index + shared index + baseline fingerprint.
-        // This is the ONLY place where rebuild is allowed.
-        // (AJAX only in practice, but we keep it safe for non-AJAX too.)
-
-        // Step 1: rebuild file index from disk
-        $rebuilt = file_index_rebuild_from_disk($UPLOAD_DIR);
-        file_index_save($CACHE_DIR, $rebuilt);
-        $fileIndex = $rebuilt;
-        $indexChanged = false; // already saved explicitly
-
-        // Step 2: rebuild shared set from disk (byname/*.txt + links/*.json validation)
-        $rebuiltShared = shared_index_rebuild_from_disk($LINK_DIR, $BY_DIR, $UPLOAD_DIR);
-        $sharedSet = $rebuiltShared;
-        $sharedComplete = (is_dir($BY_DIR) && is_readable($BY_DIR));
-        shared_index_save($CACHE_DIR, $sharedSet, $sharedComplete);
-        $sharedChanged = true;
-
-        // Step 3: write baseline uploads fingerprint (v2) + strong sha (optional)
-        $fp = mc_uploads_signature_compute($UPLOAD_DIR);
-        if ($fp) {
-            $strong = mc_uploads_strong_sha256_compute($UPLOAD_DIR);
-            if ($strong !== '') $fp['strong_sha256'] = $strong;
-            mc_uploads_fingerprint_save($CACHE_DIR, $fp);
-        }
-        
-        $ok[] = 'Index rebuild completed.';
-        $ok[] = 'Files indexed: ' . count($fileIndex) . '. Shared records: ' . count($sharedSet) . '.';
-    }
-    elseif ($action === 'reinstall') {
-        // Reinstall is now a RECONFIGURE entry point:
-        // - Do NOT delete install_state.json
-        // - Keep .htaccess in place (it's what protects install.php / index.php)
-        // - Just redirect to install.php (which is protected by admin session)
-
-        $ok[] = 'Reconfigure: redirecting to installer…';
-        $base = mc_base_uri();
-        $redirectTo = ($base === '' ? '' : $base) . '/install.php';
-    }
-    else {
-        $err[] = 'Unknown action.';
+        default:
+            $err[] = 'Unknown action.';
+            break;
     }
 
     // If uploads changed via THIS app action, update baseline fingerprint
@@ -734,40 +678,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         shared_index_save($CACHE_DIR, is_array($sharedSet) ? $sharedSet : [], $sharedComplete);
     }
 
-    $afterFlags = mc_index_flags($CACHE_DIR, $UPLOAD_DIR);
-    $totalBytes = mc_index_total_bytes($fileIndex);
+    $afterState = mc_index_state($CACHE_DIR, $UPLOAD_DIR);
 
     if ($isAjax) {
-        header('Content-Type: application/json; charset=utf-8');
-        header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
-        echo json_encode([
-            'ok' => $ok,
-            'err' => $err,
-            'redirect' => $redirectTo,
-            'stats' => [
-              'index_changed' => ($afterFlags['must'] ? 1 : 0),
-              'index_must_rebuild' => ($afterFlags['must'] ? 1 : 0),
-              'index_changed_known' => ($afterFlags['known'] ? 1 : 0),
-              'index_missing' => ($afterFlags['missing'] ? 1 : 0),
-              'index_forced' => 0,
-
-              'total_files' => count($fileIndex),
-              'total_bytes' => $totalBytes,
-              'total_human' => format_bytes($totalBytes),
-            ],
-        ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        mc_ajax_respond(
+            $ok,
+            $err,
+            $redirectTo,
+            [],
+            mc_stats_payload($afterState, $fileIndex)
+        );
         exit;
     }
 
     foreach ($ok as $m)  flash_add('ok', $m);
     foreach ($err as $m) flash_add('err', $m);
-    header('Location: index.php');
+    header('Location: ' . $indexUrl, true, 303);
     exit;
-}
-
-$flash = flash_pop();
-if (session_status() === PHP_SESSION_ACTIVE) {
-    session_write_close();
 }
 
 /* =========================
@@ -892,12 +819,12 @@ $totalHuman = format_bytes($totalBytes);
           <div id="mcAdminActions" class="collapse d-md-block">
             <div class="row g-2">
               <div class="col-12 col-md-3">
-                <!-- Check Index = refresh page to detect drift -->
+                <!-- Check Index = use ajax to detect drift -->
                 <button class="btn btn-outline-light w-100"
                         type="button"
                         id="checkIndexBtn"
-                        title="Refresh page to check for uploads drift (outer changes via SSH/FTP)."
-                        aria-label="Refresh page to check for uploads drift (outer changes via SSH/FTP).">
+                        title="Check for uploads drift (outer changes via SSH/FTP)."
+                        aria-label="Check for uploads drift (outer changes via SSH/FTP).">
                   Check Index
                 </button>
 
@@ -1384,11 +1311,9 @@ $totalHuman = format_bytes($totalBytes);
     'maxPostBytes'   => $MAX_POST_BYTES,
     'maxFileBytes'   => $MAX_FILE_BYTES,
     'maxFileUploads' => $MAX_FILE_UPLOADS,
-    'index_changed'       => ($indexNeedsRebuild ? 1 : 0),
-    'index_missing'       => ($fileIndexMissing ? 1 : 0),
-    'index_changed_known' => ($indexDriftKnown ? 1 : 0),
-    'index_must_rebuild'  => ($indexMustRebuild ? 1 : 0),
-    'index_forced'        => ($indexForced ? 1 : 0),
+    'idx_blocked' => $idx_blocked,
+    'idx_missing' => $idx_missing,
+    'idx_known'   => $idx_known,
   ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
 ?></script>
 
