@@ -36,7 +36,9 @@
 - CSRF protection and hardened sessions
 - Simple, modern UI built on Bootstrap
 - Designed for single-instance, private deployments
+- Administrator Storage Control (manual inspection and cleanup tools)
 - Built-in Info panel showing live totals and configured upload quota
+- Optional Discord webhook notifications for public downloads
 
 ---
 
@@ -50,6 +52,7 @@ Core principles:
 - **JSON indexes** for performance
 - **No automatic self-healing**
 - **Administrator-controlled consistency**
+- **Manual Storage Control** for inspection and cleanup (no background or automatic actions)
 - **Cheap drift detection, never automatic repair**
 - **Deterministic resource limits (file-count quotas)**
 
@@ -69,6 +72,34 @@ This design guarantees:
 - No unexpected heavy operations
 - No silent mutations
 - Full operator awareness and control
+
+### Storage Control vs Index Rebuild
+
+Although related, **Storage Control** and **Index Rebuild** serve different purposes:
+
+- **Index Rebuild**
+  - Restores internal consistency
+  - Reconstructs indexes from the filesystem
+  - Triggered when drift is detected
+  - Required for safe operation
+  - Does not modify stored files (only metadata)
+
+- **Storage Control**
+  - Operational maintenance and inspection
+  - Allows administrators to:
+    - inspect storage usage
+    - delete selected files
+    - clean up share links
+  - May intentionally modify stored data
+  - Always explicitly initiated by the administrator
+
+In short:
+
+> **Index Rebuild ensures correctness.  
+> Storage Control performs maintenance.**
+
+Both are **manual**, **explicit**, and **never automatic**,  
+but only Storage Control is **destructive by design**.
 
 ---
 
@@ -92,6 +123,71 @@ Behavior:
 
 Quota configuration is defined during installation and stored in
 `install_state.json`.
+
+---
+
+## Storage Control (Administrator Tools)
+
+MiniCloudS includes an **explicit, administrator-only Storage Control panel**
+for inspecting and managing stored files.
+
+Storage Control is **not automatic** and performs **no background actions**.
+
+Available tools:
+
+- Largest files inspection (top-N by size)
+- Total file count and storage usage overview
+- Manual deletion of selected files
+- Safe cleanup of orphaned share links
+- Full link reset (delete all share links)
+
+Design principles:
+
+- No automatic cleanup
+- No background scanning
+- No scheduled jobs
+- No hidden mutations
+- All actions are explicitly triggered by the administrator
+
+Safety guarantees:
+
+- Operations are serialized (no concurrent destructive actions)
+- UI is locked during storage operations
+- Index consistency is enforced before and after actions
+- Destructive operations require confirmation
+
+Storage Control is designed as an **operational maintenance tool** —
+useful for audits, cleanup, and capacity planning —
+without violating MiniCloudS’ core rule:
+**nothing happens unless the administrator explicitly requests it**.
+
+---
+
+## Discord Webhook Notifications (Optional)
+
+MiniCloudS can optionally send **Discord webhook notifications** when files are downloaded via **public share links**.
+
+Key properties:
+
+- Fully **optional** (disabled by default)
+- Configured during installation or later reconfiguration
+- No background jobs or workers
+- Rate-limited and deduplicated to prevent spam
+- Uses Discord’s official webhook API
+
+Each notification includes:
+- Application name (as defined during install)
+- File name and size
+- Share code (if applicable)
+- Downloader IP address
+- Referrer (if available)
+- User agent string
+
+Webhook configuration is stored in `install_state.json` and validated strictly
+(HTTPS only, Discord domains only, correct webhook path).
+
+This feature is designed for **audit visibility**, not real-time monitoring,
+and follows MiniCloudS’ core principles of explicit control and predictable behavior.
 
 ---
 
