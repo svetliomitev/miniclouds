@@ -389,7 +389,8 @@ function mc_write_install_state(
     int $pageSize = 0,
     int $quotaFiles = 0,
     string $adminUser = '',
-    array $allowIps = []
+    array $allowIps = [],
+    string $discordWebhook = ''
 ): void {
     $existing = mc_read_state();
     $existingId = '';
@@ -410,6 +411,11 @@ function mc_write_install_state(
 
     $adminUser = trim((string)$adminUser);
     if ($adminUser !== '') $payload['admin_user'] = $adminUser;
+
+    $discordWebhook = trim((string)$discordWebhook);
+    if ($discordWebhook !== '' && mc_discord_webhook_is_valid($discordWebhook)) {
+        $payload['discord_webhook'] = $discordWebhook;
+    }
 
     $norm = [];
     foreach ($allowIps as $v) {
@@ -1567,10 +1573,9 @@ function php_max_file_uploads(): int {
 function mc_mark_admin_session_from_basic_auth(): void {
     if (session_status() !== PHP_SESSION_ACTIVE) return;
 
-    $ru = (string)($_SERVER['REMOTE_USER'] ?? '');
-    if ($ru !== '') {
-        $_SESSION['mc_admin_ok'] = true;
-    }
+    // This function must be called ONLY from Apache-protected entrypoints (index.php / install.php).
+    // Do not attempt to infer auth headers here (REMOTE_USER / Authorization are inconsistent on FPM/mobile).
+    $_SESSION['mc_admin_ok'] = true;
 }
 
 function mc_is_admin_session(): bool {
@@ -1673,4 +1678,243 @@ function mc_render_pretty_page(string $title, string $lead, string $detail = '',
     echo '</div></div></div>';
     echo '</body></html>';
     exit;
+}
+
+/* =========================
+   DISCORD WEBHOOK (optional)
+   ========================= */
+
+function mc_discord_webhook_is_valid(string $url): bool {
+    $url = trim($url);
+    if ($url === '') return false;
+    if (strlen($url) > 400) return false;
+
+    $p = @parse_url($url);
+    if (!is_array($p)) return false;
+
+    $scheme = strtolower((string)($p['scheme'] ?? ''));
+    $host   = strtolower((string)($p['host'] ?? ''));
+    $path   = (string)($p['path'] ?? '');
+
+    if ($scheme !== 'https') return false;
+    if ($host !== 'discord.com' && $host !== 'discordapp.com') return false;
+
+    // Expected: /api/webhooks/{id}/{token}
+    if (!preg_match('~^/api/webhooks/([0-9]{16,32})/([A-Za-z0-9_-]{20,})$~', $path)) {
+        return false;
+    }
+
+    return true;
+}
+
+function mc_discord_webhook_url(): string {
+    $st = mc_read_state();
+    $url = (is_array($st) && isset($st['discord_webhook']) && is_string($st['discord_webhook']))
+        ? trim($st['discord_webhook'])
+        : '';
+
+    if ($url === '') return '';
+
+    return (mc_discord_webhook_is_valid($url) ? $url : '');
+}
+
+function mc_discord_notify_public_download(array $ev): void {
+    $url = mc_discord_webhook_url();
+    if ($url === '') return;
+
+    $st = mc_read_state();
+    $appName = (is_array($st) && !empty($st['app_name']) && is_string($st['app_name']))
+        ? trim((string)$st['app_name'])
+        : 'MiniCloudS';
+
+    // ---- rate limit keys (global + dedupe) ----
+    $now = time();
+
+    $ip = (string)($ev['ip'] ?? '');
+    $code = (string)($ev['code'] ?? '');
+    $file = (string)($ev['file'] ?? '');
+
+    // Dedupe: same downloader+file/code within 60s => skip
+    $dedupeKey = 'dl:' . hash('sha256', $ip . '|' . $code . '|' . $file);
+
+    // Global throttle: at most 1 message / 2 seconds (safe baseline)
+    $globalKey = 'dl:global';
+
+    if (!mc_discord_rl_allow($dedupeKey, 60, $now)) return;
+    if (!mc_discord_rl_allow($globalKey, 2, $now)) return;
+
+    // Backoff key for 429 Retry-After
+    $backoffKey = 'dl:backoff_until';
+    $until = mc_discord_rl_get_int($backoffKey);
+    if ($until > $now) return;
+
+    $size = (int)($ev['size'] ?? 0);
+    $ua   = (string)($ev['ua'] ?? '');
+    $ref  = (string)($ev['referer'] ?? '');
+
+    // Keep message compact; Discord has content limits.
+    $ipLine = ($ip !== '' ? ("IP: `" . mc_discord_trim($ip, 80) . "`\n") : '');
+
+    $content = "⬇️ **" . mc_discord_trim($appName, 40) . " Download**\n"
+        . "File: `{$file}` (" . mc_discord_fmt_bytes($size) . ")\n"
+        . ($code !== '' ? "Code: `{$code}`\n" : '')
+        . $ipLine
+        . ($ref !== '' ? "Ref: " . mc_discord_trim($ref, 160) . "\n" : '')
+        . "UA: " . mc_discord_trim($ua, 160);
+
+    $payload = [
+        'content' => $content,
+        'allowed_mentions' => ['parse' => []],
+    ];
+
+    $resp = mc_discord_http_post_json($url, $payload, 1.5);
+
+    // If we got rate-limited, honor Retry-After
+    if (is_array($resp) && ($resp['status'] ?? 0) === 429) {
+        $retry = (int)($resp['retry_after_sec'] ?? 0);
+        if ($retry > 0) mc_discord_rl_set_int($backoffKey, $now + $retry);
+    }
+}
+
+/* ---------- helpers (rate-limit + http) ---------- */
+
+function mc_discord_trim(string $s, int $max): string {
+    $s = trim($s);
+    if ($s === '') return '';
+    if (strlen($s) <= $max) return $s;
+    return substr($s, 0, $max - 1) . '…';
+}
+
+function mc_discord_fmt_bytes(int $n): string {
+    if ($n <= 0) return '0 B';
+    $u = ['B','KB','MB','GB','TB'];
+    $i = 0;
+    $x = (float)$n;
+    while ($x >= 1024 && $i < count($u) - 1) { $x /= 1024; $i++; }
+    if ($i === 0) return (string)$n . ' ' . $u[$i];
+    return rtrim(rtrim(number_format($x, 2, '.', ''), '0'), '.') . ' ' . $u[$i];
+}
+
+// allow once per $minIntervalSec (stores "next allowed timestamp")
+function mc_discord_rl_allow(string $key, int $minIntervalSec, int $now): bool {
+    $k = 'mc_rl_' . $key;
+
+    // APCu path (fast)
+    if (function_exists('apcu_fetch') && function_exists('apcu_store')) {
+        $next = apcu_fetch($k, $ok);
+        $next = ($ok ? (int)$next : 0);
+        if ($next > $now) return false;
+        apcu_store($k, $now + $minIntervalSec, $minIntervalSec + 5);
+        return true;
+    }
+
+    // File fallback (best-effort)
+    $path = __DIR__ . '/cache/discord_rl.json';
+    $state = [];
+    $raw = @file_get_contents($path);
+    if (is_string($raw) && $raw !== '') {
+        $j = json_decode($raw, true);
+        if (is_array($j)) $state = $j;
+    }
+
+    $next = (int)($state[$k] ?? 0);
+    if ($next > $now) return false;
+
+    $state[$k] = $now + $minIntervalSec;
+
+    // prune old entries a bit
+    if (count($state) > 2000) {
+        foreach ($state as $kk => $vv) {
+            if ((int)$vv < ($now - 3600)) unset($state[$kk]);
+        }
+    }
+
+    @file_put_contents($path, json_encode($state, JSON_UNESCAPED_SLASHES), LOCK_EX);
+    return true;
+}
+
+function mc_discord_rl_get_int(string $key): int {
+    $k = 'mc_rl_' . $key;
+    if (function_exists('apcu_fetch')) {
+        $v = apcu_fetch($k, $ok);
+        return ($ok ? (int)$v : 0);
+    }
+    $path = __DIR__ . '/cache/discord_rl.json';
+    $raw = @file_get_contents($path);
+    $j = json_decode((string)$raw, true);
+    if (!is_array($j)) return 0;
+    return (int)($j[$k] ?? 0);
+}
+
+function mc_discord_rl_set_int(string $key, int $val): void {
+    $k = 'mc_rl_' . $key;
+    if (function_exists('apcu_store')) {
+        apcu_store($k, $val, 3600);
+        return;
+    }
+    $path = __DIR__ . '/cache/discord_rl.json';
+    $state = [];
+    $raw = @file_get_contents($path);
+    $j = json_decode((string)$raw, true);
+    if (is_array($j)) $state = $j;
+    $state[$k] = $val;
+    @file_put_contents($path, json_encode($state, JSON_UNESCAPED_SLASHES), LOCK_EX);
+}
+
+// returns ['status'=>int, 'retry_after_sec'=>int|null]
+function mc_discord_http_post_json(string $url, array $payload, float $timeoutSec): array {
+    $body = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    if (!is_string($body) || $body === '') return ['status' => 0];
+
+    // Prefer curl (best control)
+    if (function_exists('curl_init')) {
+        $ch = curl_init($url);
+        curl_setopt($ch, CURLOPT_POST, 1);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, [
+            'Content-Type: application/json',
+            'User-Agent: MiniCloudS',
+        ]);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT_MS, (int)max(100, $timeoutSec * 1000));
+        curl_setopt($ch, CURLOPT_TIMEOUT_MS, (int)max(200, $timeoutSec * 1000));
+        curl_setopt($ch, CURLOPT_NOSIGNAL, 1);
+
+        $respBody = curl_exec($ch);
+        $status = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+        curl_close($ch);
+
+        if ($status === 429 && is_string($respBody) && $respBody !== '') {
+            $j = json_decode($respBody, true);
+            // Discord sends retry_after in ms (commonly) – accept either
+            $ra = $j['retry_after'] ?? null;
+            if (is_numeric($ra)) {
+                $sec = (float)$ra;
+                if ($sec > 50) $sec = $sec / 1000.0;
+                return ['status' => 429, 'retry_after_sec' => (int)ceil($sec)];
+            }
+        }
+        return ['status' => $status];
+    }
+
+    // Fallback: streams (no 429 parsing)
+    $ctx = stream_context_create([
+        'http' => [
+            'method' => 'POST',
+            'header' => "Content-Type: application/json\r\nUser-Agent: MiniCloudS\r\n",
+            'content' => (string)$body,
+            'timeout' => $timeoutSec,
+            'ignore_errors' => true,
+        ],
+    ]);
+    @file_get_contents($url, false, $ctx);
+
+    // best-effort status parse from $http_response_header
+    $status = 0;
+    if (isset($http_response_header) && is_array($http_response_header)) {
+        foreach ($http_response_header as $h) {
+            if (preg_match('~^HTTP/\S+\s+(\d{3})\b~', $h, $m)) { $status = (int)$m[1]; break; }
+        }
+    }
+    return ['status' => $status];
 }

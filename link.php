@@ -17,10 +17,6 @@ if (!is_dir($LINK_DIR))  @mkdir($LINK_DIR, 0755, true);
 if (!is_dir($BY_DIR))    @mkdir($BY_DIR, 0755, true);
 if (!is_dir($CACHE_DIR)) @mkdir($CACHE_DIR, 0755, true);
 
-function redirect_home(): never {
-    mc_redirect_home();
-}
-
 function base64url(string $bin): string {
     return rtrim(strtr(base64_encode($bin), '+/', '-_'), '=');
 }
@@ -156,7 +152,9 @@ function create_short_link(string $linkDir, string $byDir, string $filename): st
  */
 try {
     // Must be POST + AJAX
-    mc_require_ajax_post_or_pretty_403();
+    if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
+        mc_pretty_403('Forbidden', 'POST only.');
+    }
 
     // Must be admin session, but DO NOT close session yet (CSRF needs it active)
     mc_require_admin_session_or_json_403('Forbidden', false);
@@ -192,10 +190,7 @@ try {
 
     if ($action === 'get_direct') {
         $url = ($base === '' ? '' : $base) . '/download.php?via=admin&name=' . rawurlencode($name);
-        header('Content-Type: application/json; charset=utf-8');
-        header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
-        echo json_encode(['url' => $url], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-        exit;
+        mc_json_send(['url' => $url], 200);
     }
 
     $code = create_short_link($LINK_DIR, $BY_DIR, $name);
@@ -214,11 +209,7 @@ try {
     shared_index_add_filename_preserve_complete($CACHE_DIR, $name);
 
     $url  = ($base === '' ? '' : $base) . '/d/' . $code;
-
-    header('Content-Type: application/json; charset=utf-8');
-    header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
-    echo json_encode(['url' => $url], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-    exit;
+    mc_json_send(['url' => $url], 200);
 
 } catch (\Throwable $e) {
     try {

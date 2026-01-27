@@ -8,7 +8,7 @@ mc_session_start();
 
 $nonce = mc_csp_nonce();
 
-$APP_VERSION = '2.0.4';
+$APP_VERSION = '2.1.0';
 
 /* =========================
    INSTALLER / RECONFIGURATOR
@@ -55,6 +55,7 @@ $error = '';
 $userVal     = 'admin';
 $authNameVal = 'MiniCloudS';
 $ipsVal      = '';
+$discordVal  = '';
 
 $pageSizeVal = (string)$DEFAULT_PAGE_SIZE;
 $quotaVal    = (string)$DEFAULT_QUOTA_FILES; // default quota
@@ -84,6 +85,12 @@ if ($alreadyInstalled) {
             $ipsVal = '';
         }
 
+        if (!empty($st['discord_webhook']) && is_string($st['discord_webhook'])) {
+            $discordVal = trim((string)$st['discord_webhook']);
+        } else {
+            $discordVal = '';
+        }
+
         $ps = (int)$st['page_size']; // normalized by mc_read_state()
         if (!in_array($ps, $PAGE_SIZE_CHOICES, true)) $ps = $PAGE_SIZE_CHOICES[0];
         $pageSizeVal = (string)$ps;
@@ -111,6 +118,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && (string)($_POST['action'] ?
 
     $userVal     = trim((string)($_POST['user'] ?? 'admin'));
     $ipsVal      = trim((string)($_POST['ips'] ?? ''));
+    $discordVal  = trim((string)($_POST['discord_webhook'] ?? ''));
 
     $pageSizeVal = trim((string)($_POST['pagesize'] ?? $DEFAULT_PAGE_SIZE));
     $quotaVal    = trim((string)($_POST['quota_files'] ?? $DEFAULT_QUOTA_FILES));
@@ -249,6 +257,12 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && (string)($_POST['action'] ?
         }
     }
 
+    if ($error === '' && $discordVal !== '') {
+        if (!mc_discord_webhook_is_valid($discordVal)) {
+            $error = 'Bad Discord webhook URL.';
+        }
+    }
+
     /* If validation ok -> write files */
     if ($error === '') {
 
@@ -357,7 +371,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && (string)($_POST['action'] ?
                     // Write install_state.json (NO password stored)
                     try {
                         // Unified writer: version, app, page size, quota, admin user, allowlist
-                        mc_write_install_state($APP_VERSION, $authNameVal, $pageSize, $quotaFiles, $userVal, $ips);
+                        mc_write_install_state($APP_VERSION, $authNameVal, $pageSize, $quotaFiles, $userVal, $ips, $discordVal);
                     } catch (Throwable $e) {
                         $error = 'Failed to write install_state.json: ' . $e->getMessage();
                     }
@@ -528,10 +542,16 @@ echo '            <button class="btn btn-outline-secondary" type="button" data-t
 echo '          </div>';
 echo '        </div>';
 
-echo '        <div class="col-12">';
+echo '        <div class="col-12 col-md-6">';
 echo '          <label class="form-label">Allow public IPs for admin access (optional)</label>';
 echo '          <input class="form-control" id="ips" name="ips" value="' . h($ipsVal) . '" placeholder="e.g. 1.2.3.4, 5.6.7.0/24, 2001:4860::/32">';
 echo '          <div class="text-body-secondary mc-help mt-1">IPs separated by comma/spaces. If empty: any IP allowed. No private/local IPs.</div>';
+echo '        </div>';
+
+echo '        <div class="col-12 col-md-6">';
+echo '          <label class="form-label">Discord Webhook notify for downloads (optional)</label>';
+echo '          <input class="form-control" id="discord_webhook" name="discord_webhook" value="' . h($discordVal) . '" placeholder="https://discord.com/api/webhooks/.../...">';
+echo '          <div class="text-body-secondary mc-help mt-1">If empty: disabled.</div>';
 echo '        </div>';
 
 /* ---- Files per page dropdown ---- */

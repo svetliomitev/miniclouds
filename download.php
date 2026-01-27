@@ -109,6 +109,15 @@ if ($size === false) redirect_404();
 $fh = fopen($filePath, 'rb');
 if (!$fh) redirect_404();
 
+mc_discord_notify_public_download([
+    'ip'      => (string)($_SERVER['REMOTE_ADDR'] ?? ''),
+    'ua'      => (string)($_SERVER['HTTP_USER_AGENT'] ?? ''),
+    'referer' => (string)($_SERVER['HTTP_REFERER'] ?? ''),
+    'code'    => $code,
+    'file'    => $filename,
+    'size'    => (int)$size,
+]);
+
 while (ob_get_level() > 0) { @ob_end_clean(); }
 
 @set_time_limit(0);
