@@ -1284,6 +1284,8 @@ $totalHuman = format_bytes($totalBytes);
           <div class="progress-bar mc-w-0" id="mcStorageProgressBar">0%</div>
         </div>
 
+        <div id="mcStorageMsg" class="small mb-3 d-none" role="status" aria-live="polite"></div>
+
         <div id="mcStorageList" class="mc-storage-list">
           <!-- JS renders rows here -->
         </div>

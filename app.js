@@ -165,7 +165,8 @@
     storageList: document.getElementById('mcStorageList'),
     storageSummary: document.getElementById('mcStorageSummary'),
     storageProgressWrap: document.getElementById('mcStorageProgressWrap'),
-    storageProgressBar: document.getElementById('mcStorageProgressBar')
+    storageProgressBar: document.getElementById('mcStorageProgressBar'),
+    storageMsg: document.getElementById('mcStorageMsg')
   };
 
   /* =========================
@@ -1143,6 +1144,32 @@
     var lastItems = [];      // [{ name, size, mtime, shared }]
     var selected = Object.create(null); // name => 1
 
+        function msgClear(){
+      if (!DOM.storageMsg) return;
+      DOM.storageMsg.classList.add('d-none');
+      DOM.storageMsg.className = 'small mb-3 d-none';
+      DOM.storageMsg.textContent = '';
+    }
+
+    function msgShow(kind, text){
+      if (!DOM.storageMsg) return;
+      kind = String(kind || 'muted');
+      text = String(text || '').trim();
+      if (!text) { msgClear(); return; }
+
+      // base classes (keeps it uniform + Bootstrap-native)
+      var cls = 'small mb-3';
+      if (kind === 'success') cls += ' text-success';
+      else if (kind === 'danger') cls += ' text-danger';
+      else if (kind === 'warning') cls += ' text-warning';
+      else if (kind === 'info') cls += ' text-info';
+      else cls += ' text-body-secondary';
+
+      DOM.storageMsg.className = cls;
+      DOM.storageMsg.textContent = text;
+      DOM.storageMsg.classList.remove('d-none');
+    }
+
     function pickDataPayload(env){
       if (env && env.data && typeof env.data === 'object') return env.data;
       return {};
@@ -1153,6 +1180,7 @@
       lastItems = [];
       clearSelection();
       resetProgress();
+      msgClear();
 
       if (DOM.storageList) DOM.storageList.innerHTML = '';
       if (DOM.storageSummary) DOM.storageSummary.textContent = 'No data.';
@@ -1281,19 +1309,19 @@
       // blocked by hard-lock and busy (uniform)
       if (Guard.blockIf({ busy:true, hard:true })) return Promise.resolve(null);
 
+      msgClear(); // clear previous scan/delete messages
+
       return Op.runGlobal(function(){
         // acquire UI busy token so buttons disable uniformly
         var tok = UI.busyAcquire('storage-scan');
 
-        Toast.priorityAction();
-        Toast.workingWarning('Storage scan', 'Scanning biggest files...');
-
+        msgShow('info', 'Scanning biggest files...');
         setProgress(10);
 
         return postStorage('storage_scan', {})
           .then(function(r){
             if (!Net.isAppOk(r)) {
-              Toast.show('danger', 'Storage scan', 'Scan failed (server error).');
+              msgShow('danger', 'Scan failed (server error).');
               return null;
             }
 
@@ -1307,7 +1335,7 @@
             // stats sync (envelope has stats)
             syncStatsFrom(env);
 
-            Toast.show('success', 'Storage scan', 'Scan completed.', { ttl: 1600 });
+            msgShow('success', 'Scan completed.');
             setProgress(100);
 
             render();
@@ -1318,7 +1346,7 @@
             return payload;
           })
           .catch(function(){
-            Toast.show('danger', 'Storage scan', 'Scan failed (network error).');
+            msgShow('danger', 'Scan failed (network error).');
             return null;
           })
           .finally(function(){
@@ -1337,15 +1365,15 @@
       var names = selectedNames();
       if (!names.length) return Promise.resolve(null);
 
+      msgClear(); // clear previous scan/delete messages
+
       var msg = 'Delete ' + names.length + ' selected file(s)?';
       if (!window.confirm(msg)) return Promise.resolve(null);
 
       return Op.runGlobal(function(){
         var tok = UI.busyAcquire('storage-delete');
 
-        Toast.priorityAction();
-        Toast.workingWarning('Storage delete', 'Deleting selected files...');
-
+        msgShow('info', 'Deleting selected files...');
         setProgress(10);
 
         // send as repeated fields (PHP-friendly)
@@ -1357,7 +1385,7 @@
         return Net.postForm(EP.index, fd)
           .then(function(r){
             if (!Net.isAppOk(r)) {
-              Toast.show('danger', 'Storage delete', 'Delete failed (server error).');
+              msgShow('danger', 'Delete failed (server error).');
               return null;
             }
 
@@ -1376,13 +1404,13 @@
             clearSelection();
             render();
 
-            Toast.show('success', 'Storage delete', 'Delete completed.', { ttl: 1600 });
+            msgShow('success', 'Delete completed.');
             setProgress(100);
 
             return refreshToDesiredCount('Index', 'Could not refresh list (network/server error).');
           })
           .catch(function(){
-            Toast.show('danger', 'Storage delete', 'Delete failed (network error).');
+            msgShow('danger', 'Delete failed (network error).');
             return null;
           })
           .finally(function(){
@@ -2487,73 +2515,82 @@
 
       Toast.priorityAction();
 
-      var fd = new FormData(form);
+      // Prevent double-submit during the 0ms tick (do NOT disable file input).
+      setEnabled(btn, false);
 
-      var __uploadTok = UI.busyAcquire('upload');
-      setProgress(0);
+      // Yield one tick so the browser can start cleanly (helps large batches).
+      setTimeout(function(){
+        // Capture files BEFORE busyAcquire disables the file input
+        var fd = new FormData(form);
 
-      var xhr = new XMLHttpRequest();
-      xhr.open('POST', EP.index, true);
-      xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+        var __uploadTok = UI.busyAcquire('upload');
+        setProgress(0);
 
-      xhr.upload.onprogress = function(e){
-        if (e.lengthComputable) setProgress(Math.round((e.loaded / e.total) * 100));
-      };
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', EP.index, true);
+        xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
 
-      function finishUpload(needStats){
-        UI.busyRelease(__uploadTok);
-        __uploadTok = 0;
-        if (needStats) syncStatsFrom(null, { forceRefresh:true });
-      }
+        xhr.upload.onprogress = function(e){
+          if (e.lengthComputable) setProgress(Math.round((e.loaded / e.total) * 100));
+        };
 
-      xhr.onload = function(){
-        var data = null;
-        try { data = JSON.parse(xhr.responseText || '{}'); } catch (e0) {}
+        function finishUpload(needStats){
+          UI.busyRelease(__uploadTok);
+          __uploadTok = 0;
+          if (needStats) syncStatsFrom(null, { forceRefresh:true });
 
-        if (xhr.status === 200 && data) {
-          var ok = Array.isArray(data.ok) ? data.ok : [];
-          var err = Array.isArray(data.err) ? data.err : [];
-          ok = summarizeUploadOk(ok);
+          // Re-enable defensively (UI.applyButtons will also handle this)
+          setEnabled(btn, (!UI.getBusy() && !HardLock.isHard()));
+        }
 
-          var t = classifyToast(ok, err, {
-            successTitle: 'Upload completed',
-            warnTitle: 'Upload',
-            errorTitle: 'Upload',
-            infoTitle: 'Upload'
-          });
-          if (t.msg) Toast.show(t.kind, t.title, t.msg);
+        xhr.onload = function(){
+          var data = null;
+          try { data = JSON.parse(xhr.responseText || '{}'); } catch (e0) {}
 
-          // Uniform stats policy
-          syncStatsFrom(data);
+          if (xhr.status === 200 && data) {
+            var ok = Array.isArray(data.ok) ? data.ok : [];
+            var err = Array.isArray(data.err) ? data.err : [];
+            ok = summarizeUploadOk(ok);
 
-          clearInputs();
-          readInputsIntoQuery();
+            var t = classifyToast(ok, err, {
+              successTitle: 'Upload completed',
+              warnTitle: 'Upload',
+              errorTitle: 'Upload',
+              infoTitle: 'Upload'
+            });
+            if (t.msg) Toast.show(t.kind, t.title, t.msg);
 
-          input.value = '';
-          setProgress(100);
-          setTimeout(resetProgress, 600);
+            syncStatsFrom(data);
 
-          runQuery(true).finally(function(){ finishUpload(false); });
-        } else {
-          Toast.show('danger', 'Upload', 'Upload failed (server error).');
+            clearInputs();
+            readInputsIntoQuery();
+
+            input.value = '';
+            setProgress(100);
+            setTimeout(resetProgress, 600);
+
+            runQuery(true).finally(function(){ finishUpload(false); });
+          } else {
+            Toast.show('danger', 'Upload', 'Upload failed (server error).');
+            setTimeout(resetProgress, 600);
+            finishUpload(true);
+          }
+        };
+
+        xhr.onerror = function(){
+          Toast.show('danger', 'Upload', 'Upload failed (network error).');
           setTimeout(resetProgress, 600);
           finishUpload(true);
-        }
-      };
+        };
 
-      xhr.onerror = function(){
-        Toast.show('danger', 'Upload', 'Upload failed (network error).');
-        setTimeout(resetProgress, 600);
-        finishUpload(true);
-      };
+        xhr.onabort = function(){
+          Toast.show('warning', 'Upload', 'Upload aborted.');
+          setTimeout(resetProgress, 600);
+          finishUpload(true);
+        };
 
-      xhr.onabort = function(){
-        Toast.show('warning', 'Upload', 'Upload aborted.');
-        setTimeout(resetProgress, 600);
-        finishUpload(true);
-      };
-
-      xhr.send(fd);
+        xhr.send(fd);
+      }, 0);
     });
   }
 
