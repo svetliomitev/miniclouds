@@ -1767,7 +1767,7 @@ function mc_discord_notify_public_download(array $ev): void {
         'allowed_mentions' => ['parse' => []],
     ];
 
-    $resp = mc_discord_http_post_json($url, $payload, 1.5);
+    $resp = mc_discord_http_post_json($url, $payload, 0.5);
 
     // If we got rate-limited, honor Retry-After
     if (is_array($resp) && ($resp['status'] ?? 0) === 429) {
