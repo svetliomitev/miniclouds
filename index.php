@@ -434,6 +434,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 // Where we store scan session state
                 $scanDir = $CACHE_DIR . '/storage_scan';
                 if (!is_dir($scanDir)) @mkdir($scanDir, 0755, true);
+                // Opportunistic cleanup: remove stale scan state files
+                $ttl = 20 * 60; // 20 minutes
+                $now = time();
+                $glob = @glob($scanDir . '/scan_*.json');
+                if (is_array($glob)) {
+                    foreach ($glob as $p) {
+                        if (!is_string($p) || !is_file($p)) continue;
+                        $st = @stat($p);
+                        $mt = is_array($st) ? (int)($st['mtime'] ?? 0) : 0;
+                        if ($mt > 0 && ($now - $mt) > $ttl) {
+                            @unlink($p);
+                        }
+                    }
+                }
 
                 // Start: build sorted name list ONCE and persist for stepping
                 if ($mode === 'start') {
@@ -510,7 +524,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                     $total = count($names);
                     if ($total === 0) {
-                        $ok[] = 'Storage scan completed.';
+                        @unlink($scanPath);
+                        $err[] = 'Scan expired.';
                         $idxNow = file_index_load($CACHE_DIR);
                         $idxNowState = mc_index_state($CACHE_DIR, $UPLOAD_DIR);
 
@@ -518,12 +533,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             $ok,
                             $err,
                             '',
-                            [
-                                'items' => [],
-                                'done' => 0,
-                                'total' => 0,
-                                'done_flag' => 1,
-                            ],
+                            [],
                             mc_stats_payload($idxNowState, $idxNow)
                         );
                         exit;
@@ -818,7 +828,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 /* =========================
    FIRST PAINT
    ========================= */
-
+$flash = flash_pop();
 $initialOffset = 0;
 $initialLimit  = $PAGE_SIZE;
 
