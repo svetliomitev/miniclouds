@@ -13,6 +13,8 @@
 
 <img src="https://raw.githubusercontent.com/svetliomitev/miniclouds/docs/screenshots/miniclouds-desktop.png" width="1024" alt="Desktop">
 
+<img src="https://raw.githubusercontent.com/svetliomitev/miniclouds/docs/screenshots/miniclouds-storage.png" width="1024" alt="Storage">
+
 <img src="https://raw.githubusercontent.com/svetliomitev/miniclouds/docs/screenshots/miniclouds-info.png" width="1024" alt="Info">
 
 <img src="https://raw.githubusercontent.com/svetliomitev/miniclouds/docs/screenshots/miniclouds-mobile.png" height="800" alt="Mobile">
@@ -55,6 +57,60 @@ Core principles:
 - **Manual Storage Control** for inspection and cleanup (no background or automatic actions)
 - **Cheap drift detection, never automatic repair**
 - **Deterministic resource limits (file-count quotas)**
+- **Modular vanilla JavaScript** (no build tools, each feature has a single owner module)
+
+---
+
+## Client-side Architecture (JavaScript modules)
+
+MiniCloudS uses a small, explicit, **module-based vanilla JavaScript architecture**.
+
+- No frameworks
+- No build step
+- No bundlers
+- Modules are loaded as plain `.js` files and attach to the shared `window.MC` namespace.
+
+**`app.js` is only the orchestrator**:
+- loads BOOT state
+- creates the DOM cache
+- initializes modules in a deterministic order
+- wires the final boot sequence
+
+All real behavior lives in modules under `js/` (each module has a single “owner” responsibility).
+
+### Module Map (by responsibility)
+
+**Core utilities**
+- `js/mc_helpers.js` — small DOM/format helpers (escaping, percent classes, encoding, etc.)
+- `js/mc_net.js` — network layer (fetch/post + consistent JSON envelope handling)
+- `js/mc_ops_ui.js` — Operation Runner + UI policy (busy tokens + button/grid enable rules)
+
+**Modal + lock model**
+- `js/mc_modals_hardlock.js` — centralized modal helpers + HardLock state machine (index drift lock)
+
+**Lifecycle + flow**
+- `js/mc_renderlife.js` — post-render lifecycle hooks (hydrate, policies, coalescing)
+- `js/mc_checkindex.js` — Check Index flow (start/finish/defer lock, toast sequencing)
+
+**UI + state owners**
+- `js/mc_stats.js` — stats sync layer (totals + hard-lock decisions via HardLock)
+- `js/mc_list.js` — list fetch owner (paging, preserving shared URLs, show-more)
+- `js/mc_render.js` — file card renderer (grid + empty state + show-more hint)
+- `js/mc_search.js` — search UI wiring (inputs, debounce, flags, reset/show-more behavior)
+- `js/mc_links.js` — share/unshare + link hydration + copy-to-clipboard behavior
+- `js/mc_delegated_actions.js` — delegated click/keyboard handling on the grid
+- `js/mc_upload.js` — uploads flow (progress, quota checks, UI integration)
+- `js/mc_storage_control.js` — admin Storage Control tool (scan + delete biggest files)
+- `js/mc_guard.js` — centralized blocking rules (busy/hard/row lock checks)
+- `js/mc_toast.js` — toasts (normal + search toast)
+- `js/mc_init.js` — boot orchestrator (wires modules and runs initial paint)
+
+This modular design keeps MiniCloudS predictable:
+- every feature has a single code “home”
+- blocking rules are uniform (busy / hard-lock / overlay)
+- no scattered patches or duplicate state machines
+
+---
 
 ### Index Management Model
 
@@ -256,19 +312,36 @@ After installation, the application is ready to use, you just enter you username
 
 ```text
 /your-instance-web-path/
-├─ index.php            Main application entry point (UI + admin actions)
-├─ lib.php              Core helpers: security, sessions, CSRF, index logic
-├─ link.php             Share-link endpoint (create / resolve shared URLs)
-├─ download.php         Secure file download handler (admin & shared access)
-├─ error.php            User-friendly error fallback page
-├─ install.php          Installer wizard (initial setup & configuration)
-├─ app.js               Client-side logic (AJAX, uploads, UI state)
-├─ style.css            Application styling (Bootstrap extensions only)
-├─ miniclouds-icon.png  Application icon
-├─ uploads/             Stored user files (runtime; auto-created)
-├─ links/               Shared-link storage (runtime; auto-created)
-│  └─ byname/           Filename → link index (runtime; auto-created)
-└─ cache/               Runtime cache and index metadata (runtime; auto-created)
+├─ index.php                 Main application entry point (UI + admin actions)
+├─ lib.php                   Core helpers: security, sessions, CSRF, index logic
+├─ link.php                  Share-link endpoint (create / resolve shared URLs)
+├─ download.php              Secure file download handler (admin & shared access)
+├─ error.php                 User-friendly error fallback page
+├─ install.php               Installer wizard (initial setup & configuration)
+├─ app.js                    Client orchestrator (boot + module init wiring)
+├─ js/                       Client modules (vanilla JS, no build step)
+│  ├─ mc_helpers.js           Shared helpers (escape, format, encode, etc.)
+│  ├─ mc_net.js               Network layer (fetch/post + JSON envelope)
+│  ├─ mc_ops_ui.js            Op runner + UI busy policy
+│  ├─ mc_modals_hardlock.js   Modal helpers + HardLock state machine
+│  ├─ mc_toast.js             Toast system
+│  ├─ mc_guard.js             Central blocking rules
+│  ├─ mc_renderlife.js        Render lifecycle hooks
+│  ├─ mc_checkindex.js        Check Index flow
+│  ├─ mc_stats.js             Stats sync (totals + lock sync)
+│  ├─ mc_render.js            File card renderer
+│  ├─ mc_list.js              List fetch/paging owner
+│  ├─ mc_search.js            Search wiring (debounce, flags, reset, show-more)
+│  ├─ mc_links.js             Share/unshare + link hydration/copy behavior
+│  ├─ mc_delegated_actions.js Delegated grid click/keyboard handlers
+│  ├─ mc_upload.js            Upload owner (progress + quota integration)
+│  └─ mc_storage_control.js   Admin Storage Control (scan + delete)
+├─ style.css                 Application styling (Bootstrap extensions only)
+├─ miniclouds-icon.png       Application icon
+├─ uploads/                  Stored user files (runtime; auto-created)
+├─ links/                    Shared-link storage (runtime; auto-created)
+│  └─ byname/                Filename → link index (runtime; auto-created)
+└─ cache/                    Runtime cache and index metadata (runtime; auto-created)
 ```
 
 Runtime directories are created automatically if missing, so no need to create them manually. If you choose not to clone this repo, but upload files before installation, these are the files that you must have in your directory (web accessible):
@@ -281,9 +354,11 @@ download.php
 error.php
 install.php
 app.js
+js/ (all module files)
 style.css
 miniclouds-icon.png
 ```
+
 ---
 
 ## Security Notes
