@@ -8,7 +8,7 @@ mc_session_start();
 
 $nonce = mc_csp_nonce();
 
-$APP_VERSION = '2.1.1';
+$APP_VERSION = '2.2.3';
 
 /* =========================
    INSTALLER / RECONFIGURATOR
@@ -324,6 +324,12 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && (string)($_POST['action'] ?
                 $ht .= "ErrorDocument 401 " . $err401 . "\n";
                 $ht .= "ErrorDocument 403 " . $err403 . "\n";
                 $ht .= "ErrorDocument 404 " . $err404 . "\n\n";
+
+                /* Allow JS modules in /js (path-aware) */
+                $ht .= "<If \"%{REQUEST_URI} =~ m#(^|/)js/[^/]+\\.js$#\">\n";
+                $ht .= "  Require all granted\n";
+                $ht .= "</If>\n\n";
+
 
                 /* public assets */
                 $ht .= "<FilesMatch \"^(?:app\\.js|style\\.css|miniclouds-icon\\.png)$\">\n";

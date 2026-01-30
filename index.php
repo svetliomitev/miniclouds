@@ -418,73 +418,185 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             break;
 
         case 'storage_scan':
-            // Admin tool: scan biggest files (AJAX only)
+            // Admin tool: scan biggest files (AJAX only) - real progress via chunked steps
             if (!$isAjax) {
                 $err[] = 'Storage scan is available only via AJAX.';
             } else {
-                // Load fresh index for scan (reflect latest disk/index state)
-                $idxNow = file_index_load($CACHE_DIR);
+                $mode = (string)($_POST['mode'] ?? 'start'); // start | step
 
                 $limit = (int)($_POST['limit'] ?? 200);
                 if ($limit < 10) $limit = 10;
                 if ($limit > 500) $limit = 500;
 
-                // Build "is shared" fast when possible
+                // Shared checks: fast when we have a complete shared index
                 $useSharedSetScan = ($sharedComplete && is_array($sharedSet)) ? $sharedSet : null;
 
-                // Sort by size desc (index already has size/mtime)
-                $rows = array_values($idxNow);
-                usort($rows, function($a, $b){
-                    $sa = (int)($a['size'] ?? 0);
-                    $sb = (int)($b['size'] ?? 0);
-                    if ($sa === $sb) return 0;
-                    return ($sa > $sb) ? -1 : 1;
-                });
+                // Where we store scan session state
+                $scanDir = $CACHE_DIR . '/storage_scan';
+                if (!is_dir($scanDir)) @mkdir($scanDir, 0755, true);
 
-                $items = [];
-                $n = min($limit, count($rows));
+                // Start: build sorted name list ONCE and persist for stepping
+                if ($mode === 'start') {
+                    $idxNow = file_index_load($CACHE_DIR);
 
-                for ($i = 0; $i < $n; $i++) {
-                    $r = $rows[$i];
-                    $nm = (string)($r['name'] ?? '');
-                    if ($nm === '') continue;
+                    $rows = array_values($idxNow);
+                    usort($rows, function($a, $b){
+                        $sa = (int)($a['size'] ?? 0);
+                        $sb = (int)($b['size'] ?? 0);
+                        if ($sa === $sb) return 0;
+                        return ($sa > $sb) ? -1 : 1;
+                    });
 
-                    $isShared = false;
-                    if (is_array($useSharedSetScan)) {
-                        $isShared = shared_index_has($useSharedSetScan, $nm);
-                    } else {
-                        $isShared = is_shared_file($BY_DIR, $nm);
+                    $names = [];
+                    $n = min($limit, count($rows));
+                    for ($i = 0; $i < $n; $i++) {
+                        $nm = (string)($rows[$i]['name'] ?? '');
+                        if ($nm !== '') $names[] = $nm;
                     }
 
-                    $items[] = [
-                        'name'   => $nm,
-                        'size'   => (int)($r['size'] ?? 0),
-                        'mtime'  => (int)($r['mtime'] ?? 0),
-                        'shared' => $isShared ? 1 : 0,
-                    ];
+                    // Scan id (short, safe)
+                    $scanId = bin2hex(random_bytes(8));
+                    $scanPath = $scanDir . '/scan_' . $scanId . '.json';
+
+                    // Persist name list (items will be computed in steps)
+                    @file_put_contents($scanPath, json_encode([
+                        't' => time(),
+                        'limit' => $limit,
+                        'names' => $names,
+                    ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+
+                    $ok[] = 'Storage scan started.';
+                    $idxNowState = mc_index_state($CACHE_DIR, $UPLOAD_DIR);
+
+                    mc_ajax_respond(
+                        $ok,
+                        $err,
+                        '',
+                        [
+                            'scan_id' => $scanId,
+                            'total' => count($names),
+                        ],
+                        mc_stats_payload($idxNowState, $idxNow)
+                    );
+                    exit;
                 }
 
-                $ok[] = 'Storage scan completed.';
-                $idxNowState = mc_index_state($CACHE_DIR, $UPLOAD_DIR);
+                // Step: compute shared flag + read size/mtime from index for a chunk
+                if ($mode === 'step') {
+                    $scanId = preg_replace('~[^a-f0-9]~i', '', (string)($_POST['scan_id'] ?? ''));
+                    $offset = (int)($_POST['offset'] ?? 0);
+                    if ($offset < 0) $offset = 0;
 
-                mc_ajax_respond(
-                    $ok,
-                    $err,
-                    '',
-                    ['items' => $items],
-                    mc_stats_payload($idxNowState, $idxNow)
-                );
-                exit;
+                    $chunk = (int)($_POST['chunk'] ?? 25);
+                    if ($chunk < 5) $chunk = 5;
+                    if ($chunk > 50) $chunk = 50;
+
+                    if ($scanId === '') {
+                        $err[] = 'Invalid scan id.';
+                        mc_ajax_respond($ok, $err, '', [], mc_stats_payload(mc_index_state($CACHE_DIR, $UPLOAD_DIR), $fileIndex));
+                        exit;
+                    }
+
+                    $scanPath = $scanDir . '/scan_' . $scanId . '.json';
+                    if (!is_file($scanPath)) {
+                        $err[] = 'Scan expired.';
+                        mc_ajax_respond($ok, $err, '', [], mc_stats_payload(mc_index_state($CACHE_DIR, $UPLOAD_DIR), $fileIndex));
+                        exit;
+                    }
+
+                    $raw = @file_get_contents($scanPath);
+                    $j = json_decode((string)$raw, true);
+                    $names = (is_array($j) && is_array($j['names'] ?? null)) ? $j['names'] : [];
+
+                    $total = count($names);
+                    if ($total === 0) {
+                        $ok[] = 'Storage scan completed.';
+                        $idxNow = file_index_load($CACHE_DIR);
+                        $idxNowState = mc_index_state($CACHE_DIR, $UPLOAD_DIR);
+
+                        mc_ajax_respond(
+                            $ok,
+                            $err,
+                            '',
+                            [
+                                'items' => [],
+                                'done' => 0,
+                                'total' => 0,
+                                'done_flag' => 1,
+                            ],
+                            mc_stats_payload($idxNowState, $idxNow)
+                        );
+                        exit;
+                    }
+
+                    $idxNow = file_index_load($CACHE_DIR);
+
+                    $items = [];
+                    $end = min($total, $offset + $chunk);
+
+                    for ($i = $offset; $i < $end; $i++) {
+                        $nm = (string)$names[$i];
+                        if ($nm === '') continue;
+
+                        $r = $idxNow[$nm] ?? null;
+
+                        $isShared = false;
+                        if (is_array($useSharedSetScan)) {
+                            $isShared = shared_index_has($useSharedSetScan, $nm);
+                        } else {
+                            $isShared = is_shared_file($BY_DIR, $nm);
+                        }
+
+                        $items[] = [
+                            'name'   => $nm,
+                            'size'   => (int)($r['size'] ?? 0),
+                            'mtime'  => (int)($r['mtime'] ?? 0),
+                            'shared' => $isShared ? 1 : 0,
+                        ];
+                    }
+
+                    $done = $end;
+                    $doneFlag = ($done >= $total) ? 1 : 0;
+
+                    // If done, we can delete the scan file to keep cache clean
+                    if ($doneFlag) {
+                        @unlink($scanPath);
+                        $ok[] = 'Storage scan completed.';
+                    }
+
+                    $idxNowState = mc_index_state($CACHE_DIR, $UPLOAD_DIR);
+
+                    mc_ajax_respond(
+                        $ok,
+                        $err,
+                        '',
+                        [
+                            'items' => $items,     // chunk only
+                            'done'  => $done,
+                            'total' => $total,
+                            'done_flag' => $doneFlag,
+                        ],
+                        mc_stats_payload($idxNowState, $idxNow)
+                    );
+                    exit;
+                }
+
+                $err[] = 'Unknown scan mode.';
             }
             break;
 
         case 'storage_delete':
-            // Admin tool: delete selected (AJAX only)
+            // Admin tool: delete selected (AJAX only) - chunk-friendly
             if (!$isAjax) {
                 $err[] = 'Storage delete is available only via AJAX.';
             } else {
                 $names = $_POST['names'] ?? [];
                 if (!is_array($names)) $names = [];
+
+                // When deleting in chunks, we don't want to rebuild/return the big list every time.
+                // return_items=1 => include refreshed scan list in response (use only on last chunk).
+                $returnItems = (int)($_POST['return_items'] ?? 1);
+                if ($returnItems !== 0) $returnItems = 1;
 
                 $deleted = 0;
                 $failed = 0;
@@ -533,7 +645,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 // If anything failed, DO NOT refresh baseline (force drift rebuild if needed)
                 if ($failed > 0) $uploadsChanged = false;
 
-                // Persist changes BEFORE we re-load for the returned list
+                // Persist changes BEFORE we re-load for the returned list / stats
                 if ($uploadsChanged) {
                     $fp = mc_uploads_signature_compute($UPLOAD_DIR);
                     if ($fp) mc_uploads_fingerprint_save($CACHE_DIR, $fp);
@@ -544,48 +656,54 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     shared_index_save($CACHE_DIR, is_array($sharedSet) ? $sharedSet : [], $sharedComplete);
                 }
 
-                // Return the updated scan list (now consistent)
+                // Fresh load for accurate stats + optional refreshed scan list
                 $idxNow = file_index_load($CACHE_DIR);
-                $useSharedSetScan = ($sharedComplete && is_array($sharedSet)) ? $sharedSet : null;
-
-                $rows = array_values($idxNow);
-                usort($rows, function($a, $b){
-                    $sa = (int)($a['size'] ?? 0);
-                    $sb = (int)($b['size'] ?? 0);
-                    if ($sa === $sb) return 0;
-                    return ($sa > $sb) ? -1 : 1;
-                });
-
-                $items = [];
-                $n = min(200, count($rows));
-                for ($i = 0; $i < $n; $i++) {
-                    $r = $rows[$i];
-                    $nm = (string)($r['name'] ?? '');
-                    if ($nm === '') continue;
-
-                    $isShared = false;
-                    if (is_array($useSharedSetScan)) $isShared = shared_index_has($useSharedSetScan, $nm);
-                    else $isShared = is_shared_file($BY_DIR, $nm);
-
-                    $items[] = [
-                        'name'   => $nm,
-                        'size'   => (int)($r['size'] ?? 0),
-                        'mtime'  => (int)($r['mtime'] ?? 0),
-                        'shared' => $isShared ? 1 : 0,
-                    ];
-                }
-
                 $afterState = mc_index_state($CACHE_DIR, $UPLOAD_DIR);
+
+                $data = [
+                    'deleted' => $deleted,
+                    'failed' => $failed,
+                ];
+
+                if ($returnItems === 1) {
+                    // Return the updated scan list (now consistent)
+                    $useSharedSetScan = ($sharedComplete && is_array($sharedSet)) ? $sharedSet : null;
+
+                    $rows = array_values($idxNow);
+                    usort($rows, function($a, $b){
+                        $sa = (int)($a['size'] ?? 0);
+                        $sb = (int)($b['size'] ?? 0);
+                        if ($sa === $sb) return 0;
+                        return ($sa > $sb) ? -1 : 1;
+                    });
+
+                    $items = [];
+                    $n = min(200, count($rows));
+                    for ($i = 0; $i < $n; $i++) {
+                        $r = $rows[$i];
+                        $nm = (string)($r['name'] ?? '');
+                        if ($nm === '') continue;
+
+                        $isShared = false;
+                        if (is_array($useSharedSetScan)) $isShared = shared_index_has($useSharedSetScan, $nm);
+                        else $isShared = is_shared_file($BY_DIR, $nm);
+
+                        $items[] = [
+                            'name'   => $nm,
+                            'size'   => (int)($r['size'] ?? 0),
+                            'mtime'  => (int)($r['mtime'] ?? 0),
+                            'shared' => $isShared ? 1 : 0,
+                        ];
+                    }
+
+                    $data['items'] = $items;
+                }
 
                 mc_ajax_respond(
                     $ok,
                     $err,
                     '',
-                    [
-                        'items' => $items,
-                        'deleted' => $deleted,
-                        'failed' => $failed,
-                    ],
+                    $data,
                     mc_stats_payload($afterState, $idxNow)
                 );
                 exit;
@@ -1319,6 +1437,26 @@ $totalHuman = format_bytes($totalBytes);
   ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
 ?></script>
 
+<script src="js/mc_helpers.js?v=<?=rawurlencode((string)($APP_VERSION ?? '1'))?>" defer></script>
+<script src="js/mc_net.js?v=<?=rawurlencode((string)($APP_VERSION ?? '1'))?>" defer></script>
+<script src="js/mc_ops_ui.js?v=<?=rawurlencode((string)($APP_VERSION ?? '1'))?>" defer></script>
+<script src="js/mc_guard.js?v=<?=rawurlencode((string)($APP_VERSION ?? '1'))?>" defer></script>
+<script src="js/mc_modals_hardlock.js?v=<?=rawurlencode((string)($APP_VERSION ?? '1'))?>" defer></script>
+<script src="js/mc_toast.js?v=<?=rawurlencode((string)($APP_VERSION ?? '1'))?>" defer></script>
+<script src="js/mc_renderlife.js?v=<?=rawurlencode((string)($APP_VERSION ?? '1'))?>" defer></script>
+<script src="js/mc_render_files.js?v=<?=rawurlencode((string)($APP_VERSION ?? '1'))?>" defer></script>
+<script src="js/mc_endpoints.js?v=<?=rawurlencode((string)($APP_VERSION ?? '1'))?>" defer></script>
+<script src="js/mc_stats.js?v=<?=rawurlencode((string)($APP_VERSION ?? '1'))?>" defer></script>
+<script src="js/mc_checkindex.js?v=<?=rawurlencode((string)($APP_VERSION ?? '1'))?>" defer></script>
+<script src="js/mc_links.js?v=<?=rawurlencode((string)($APP_VERSION ?? '1'))?>" defer></script>
+<script src="js/mc_list.js?v=<?=rawurlencode((string)($APP_VERSION ?? '1'))?>" defer></script>
+<script src="js/mc_upload.js?v=<?=rawurlencode((string)($APP_VERSION ?? '1'))?>" defer></script>
+<script src="js/mc_search.js?v=<?=rawurlencode((string)($APP_VERSION ?? '1'))?>" defer></script>
+<script src="js/mc_ajaxforms.js?v=<?=rawurlencode((string)($APP_VERSION ?? '1'))?>" defer></script>
+<script src="js/mc_delegated_actions.js?v=<?=rawurlencode((string)($APP_VERSION ?? '1'))?>" defer></script>
+<script src="js/mc_storage_control.js?v=<?=rawurlencode((string)($APP_VERSION ?? '1'))?>" defer></script>
+<script src="js/mc_rowbusy.js?v=<?=rawurlencode((string)($APP_VERSION ?? '1'))?>" defer></script>
+<script src="js/mc_init.js?v=<?=rawurlencode((string)($APP_VERSION ?? '1'))?>" defer></script>
 <script src="app.js?v=<?=rawurlencode((string)($APP_VERSION ?? '1'))?>" defer></script>
 
 </body>
