@@ -22,7 +22,7 @@
 
     var CheckIndexFlow = opts.CheckIndexFlow;
 
-    var modalHide = opts.modalHide;
+    var Modals = opts.Modals || {};
 
     var Totals = opts.Totals;
     var pageState = opts.pageState;
@@ -86,7 +86,7 @@
           if (!form) return;
 
           // Close modal first (NO working toast while modal is on)
-          if (modalHide) modalHide(DOM.indexChangedModal);
+          if (Modals && Modals.hide) Modals.hide(DOM.indexChangedModal);
 
           // Fire the existing centralized js-ajax submit pipeline.
           // Small delay so Bootstrap cleanup settles.
@@ -135,6 +135,24 @@
 
     function initModalLifecycle(){
       if (!window.bootstrap) return;
+
+      // Modal "will show" policy (moved from app.js MC.onModalWillShow)
+      L.on(document, 'show.bs.modal', function(ev){
+        var el = ev && ev.target;
+
+        // Storage Control modal => ALWAYS baseline
+        if (DOM && DOM.storageModal && el === DOM.storageModal) {
+          if (Search && Search.resetToInitial) Search.resetToInitial(true);
+          return;
+        }
+
+        // Index Changed modal => baseline only if NOT boot-time
+        if (DOM && DOM.indexChangedModal && el === DOM.indexChangedModal) {
+          if (HardLock && HardLock.source && HardLock.source() !== 'boot') {
+            if (Search && Search.resetToInitial) Search.resetToInitial(true);
+          }
+        }
+      }, true);
 
       // Any modal closed by Bootstrap should restore background UI.
       L.on(document, 'hidden.bs.modal', function(){

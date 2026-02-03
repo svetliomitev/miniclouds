@@ -14,6 +14,7 @@
     var Net = deps.Net || {};
     var EP = deps.EP || {};
     var Toast = deps.Toast || {};
+    var HardLock = deps.HardLock || {};
 
     var PAGE_SIZE = Number(deps.PAGE_SIZE || 20);
 
@@ -320,11 +321,15 @@
         });
     }
 
-    function runQuery(reset){
+    function runQuery(reset, opts){
       reset = !!reset;
+      opts = opts || {};
 
-      // app.js already blocks with HardLock; keep this module dumb.
-      // We just implement the same mechanics.
+      // moved from app.js adapter: keep behavior identical
+      if (HardLock && HardLock.isHard && HardLock.isHard() && !opts.allowHard) {
+        return Promise.resolve(null);
+      }
+
       if (reset) {
         if (DOM.showMoreWrap) DOM.showMoreWrap.classList.add('d-none');
         if (DOM.showMoreHint) DOM.showMoreHint.textContent = '';

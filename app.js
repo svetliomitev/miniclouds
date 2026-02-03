@@ -196,14 +196,16 @@
     bootstrapRef: (window.bootstrap || null)
   }) : null);
 
-  // keep local modal function names (so the rest of app.js stays untouched)
-  var modalShow = (MC.Modals && MC.Modals.show)
-    ? function(el){ MC.Modals.show(el, forceShow, window.bootstrap || null); }
-    : function(){};
+  // Bound Modals API (single adapter) — modules call Modals.show/hide(el)
+  var Modals = (function(){
+    var api = (MC && MC.Modals) ? MC.Modals : null;
+    var bs = window.bootstrap || null;
 
-  var modalHide = (MC.Modals && MC.Modals.hide)
-    ? function(el){ MC.Modals.hide(el, forceHide, window.bootstrap || null); }
-    : function(){};
+    return {
+      show: (api && api.show) ? function(el){ api.show(el, forceShow, bs); } : function(){},
+      hide: (api && api.hide) ? function(el){ api.hide(el, forceHide, bs); } : function(){}
+    };
+  })();
 
   /* =========================
     TOAST (module init)
@@ -254,12 +256,16 @@
     Toast: Toast
   }) : null);
 
+  var hydrateSharedUrls = null;
+
   /* =========================
   RENDER LIFECYCLE (module init)
   ========================= */
   var RenderLife = (MC.initRenderLife ? MC.initRenderLife({
     onApplyGridPolicy: function(){ if (UI && UI.applyGridPolicy) UI.applyGridPolicy(); },
-    onHydrateSharedUrls: function(){ ensureVisibleSharedUrls(); },
+    onHydrateSharedUrls: function(){
+      if (typeof hydrateSharedUrls === 'function') hydrateSharedUrls();
+    },
     onApplyTotalsPolicy: function(){ applyTotalsUiPolicy(); }
   }) : null);
 
@@ -271,6 +277,234 @@
     HardLock: HardLock,
     RenderLife: RenderLife
   }) : null);
+
+  /* =========================
+     STATE
+     ========================= */
+  var query = { q:'', from:'', to:'', flags:'all' };
+
+  var bootFiles = Array.isArray(BOOT.filesPage) ? BOOT.filesPage : [];
+
+  var pageState = {
+    offset: bootFiles.length,
+    total: Number(BOOT.totalFiles || 0),
+    files: bootFiles
+  };
+
+  // Always totals for ALL uploaded files (never filtered)
+  var Totals = {
+    files: Number(BOOT.totalFiles || 0),
+    human: (DOM.footerTotal ? String(DOM.footerTotal.textContent || '').trim() : formatBytes(0))
+  };
+
+  /* keep old local names (adapters) */
+  function applyTotalsUiPolicy(){
+    if (AppInit && AppInit.applyTotalsUiPolicy) return AppInit.applyTotalsUiPolicy();
+  }
+
+  var __mcUrlInflight = Object.create(null);
+
+  /* =========================
+    STATS (module init)
+    ========================= */
+  var Stats = (MC.initStats ? MC.initStats({
+    DOM: DOM,
+    Totals: Totals,
+    HardLock: HardLock,
+    CheckIndexFlow: CheckIndexFlow,
+    Net: Net,
+    EP: EP,
+    Toast: Toast,
+    applyTotalsUiPolicy: applyTotalsUiPolicy
+  }) : null);
+
+  /* =========================
+    RENDER (module init)
+    ========================= */
+  var Render = (MC.initRender ? MC.initRender({
+    DOM: DOM,
+    RenderLife: RenderLife,
+    csrfToken: csrfToken,
+
+    encName: encName,
+    escapeHtml: escapeHtml,
+    formatBytes: formatBytes,
+    formatDate: formatDate,
+    highlightText: highlightText
+  }) : null);
+
+  /* =========================
+     LIST (module init)
+     ========================= */
+  var __mcNavigatingRef = { value: false };
+
+  var List = (MC.initList ? MC.initList({
+    DOM: DOM,
+    Net: Net,
+    EP: EP,
+    Toast: Toast,
+    HardLock: HardLock,
+
+    PAGE_SIZE: PAGE_SIZE,
+
+    splitTerms: splitTerms,
+    decName: decName,
+
+    renderFiles: (Render && Render.renderFiles) ? Render.renderFiles : null,
+    updateCounts: (UI && UI.updateCounts) ? UI.updateCounts : null,
+
+    getQuery: function(){ return query; },
+    pageState: pageState,
+
+    __mcNavigatingRef: __mcNavigatingRef
+  }) : null);
+
+  var fetchListSafe = (List && List.fetchListSafe)
+    ? List.fetchListSafe
+    : function(){ return Promise.resolve(null); };
+
+  var refreshToDesiredCount = (List && List.refreshToDesiredCount)
+    ? List.refreshToDesiredCount
+    : function(){ return Promise.resolve(null); };
+
+  var runQuery = (List && List.runQuery)
+    ? List.runQuery
+    : function(){ return Promise.resolve(null); };
+
+  /* =========================
+     SEARCH (module init)
+     ========================= */
+  var Search = (MC.initSearch ? MC.initSearch({
+    DOM: DOM,
+    L: L,
+    Guard: Guard,
+    UI: UI,
+    HardLock: HardLock,
+    Toast: Toast,
+
+    PAGE_SIZE: PAGE_SIZE,
+    pageState: pageState,
+
+    setEnabled: setEnabled,
+    fetchListSafe: fetchListSafe,
+    runQuery: runQuery,
+    RenderLife: RenderLife,
+
+    getQuery: function(){ return query; },
+    setQuery: function(q){ query = q; }
+  }) : null);
+
+  var setFlagsUI = (Search && Search.setFlagsUI)
+    ? Search.setFlagsUI
+    : function(){};
+
+  var readInputsIntoQuery = (Search && Search.readInputsIntoQuery)
+    ? Search.readInputsIntoQuery
+    : function(){ return query; };
+
+  var clearInputs = (Search && Search.clearInputs)
+    ? Search.clearInputs
+    : function(){ return query; };
+
+  /* =========================
+     AJAX FORMS (module init)
+     ========================= */
+  var AjaxForms = (MC.initAjaxForms ? MC.initAjaxForms({
+    DOM: DOM,
+    L: L,
+
+    Net: Net,
+    EP: EP,
+
+    Toast: Toast,
+    UI: UI,
+    Guard: Guard,
+    RowBusy: RowBusy,
+
+    navigatingRef: __mcNavigatingRef,
+
+    syncStatsFrom: (Stats ? Stats.syncStatsFrom : null),
+    clearInputs: clearInputs,
+    readInputsIntoQuery: readInputsIntoQuery,
+    runQuery: runQuery,
+    refreshToDesiredCount: refreshToDesiredCount,
+
+    setEnabled: setEnabled
+  }) : null);
+
+  function wireAjaxForms(){
+    if (AjaxForms && AjaxForms.wire) AjaxForms.wire();
+  }
+
+  /* =========================
+    UPLOAD (module init)
+  ========================= */
+  var Upload = (MC.initUpload ? MC.initUpload({
+    BOOT: BOOT,
+    DOM: DOM,
+    EP: EP,
+    UI: UI,
+    Guard: Guard,
+    HardLock: HardLock,
+    Toast: Toast,
+    QUOTA_FILES: QUOTA_FILES,
+    Totals: Totals,
+    setEnabled: setEnabled,
+    setPctClass: setPctClass,
+    formatBytes: formatBytes,
+    classifyToast: (MC && MC.classifyToast) ? MC.classifyToast : null,
+    clearInputs: clearInputs,
+    readInputsIntoQuery: readInputsIntoQuery,
+    runQuery: runQuery,
+    syncStatsFrom: (Stats ? Stats.syncStatsFrom : null)
+  }) : null);
+
+  /* =========================
+     LINKS (module init)
+     ========================= */
+  var Links = (MC.initLinks ? MC.initLinks({
+    DOM: DOM,
+    Net: Net,
+    EP: EP,
+    Toast: Toast,
+    Guard: Guard,
+    RowBusy: RowBusy,
+    RenderLife: RenderLife,
+    HardLock: HardLock,
+    CheckIndexFlow: CheckIndexFlow,
+
+    csrfToken: csrfToken,
+
+    encName: encName,
+    decName: decName,
+    cssEscape: cssEscape,
+    startDownloadNoNav: startDownloadNoNav,
+
+    classifyToast: (MC && MC.classifyToast) ? MC.classifyToast : null,
+    syncStatsFrom: (Stats ? Stats.syncStatsFrom : null),
+
+    readInputsIntoQuery: readInputsIntoQuery,
+    refreshToDesiredCount: refreshToDesiredCount,
+
+    getQueryFlags: function(){ return String(query.flags || 'all'); },
+
+    pageState: pageState,
+    urlInflight: __mcUrlInflight
+  }) : null);
+
+  /* =========================
+    DELEGATED ACTIONS (module init)
+    ========================= */
+  var DelegatedActions = (MC.initDelegatedActions ? MC.initDelegatedActions({    
+    DOM: DOM,
+    L: L,
+    Links: Links,
+    decName: decName
+  }) : null);
+
+  hydrateSharedUrls = (DelegatedActions && DelegatedActions.ensureVisibleSharedUrls)
+    ? DelegatedActions.ensureVisibleSharedUrls
+    : null;
 
   /* =========================
      STORAGE CONTROL (module init)
@@ -301,342 +535,13 @@
     formatBytes: formatBytes,
     formatDate: formatDate,
 
-    syncStatsFrom: syncStatsFrom,
-    buildStatsUrl: buildStatsUrl,
+    syncStatsFrom: (Stats ? Stats.syncStatsFrom : null),
+    buildStatsUrl: (Stats ? Stats.buildStatsUrl : null),
     readInputsIntoQuery: readInputsIntoQuery,
     refreshToDesiredCount: refreshToDesiredCount,
 
-    modalShow: modalShow
+    Modals: Modals
   }) : null);
-
-  /* =========================
-     STATE
-     ========================= */
-  var query = { q:'', from:'', to:'', flags:'all' };
-
-  var bootFiles = Array.isArray(BOOT.filesPage) ? BOOT.filesPage : [];
-
-  var pageState = {
-    offset: bootFiles.length,
-    total: Number(BOOT.totalFiles || 0),
-    files: bootFiles
-  };
-
-  // Always totals for ALL uploaded files (never filtered)
-  var Totals = {
-    files: Number(BOOT.totalFiles || 0),
-    human: (DOM.footerTotal ? String(DOM.footerTotal.textContent || '').trim() : formatBytes(0))
-  };
-
-  var __mcUrlInflight = Object.create(null);
-
-  /* =========================
-    STATS (module init)
-    ========================= */
-  var Stats = (MC.initStats ? MC.initStats({
-    DOM: DOM,
-    Totals: Totals,
-    HardLock: HardLock,
-    CheckIndexFlow: CheckIndexFlow,
-    Net: Net,
-    EP: EP,
-    Toast: Toast,
-    applyTotalsUiPolicy: applyTotalsUiPolicy
-  }) : null);
-
-  // keep old local function names so the rest of app.js stays untouched
-  function pickStatsFromEnvelope(env){ return Stats.pickStatsFromEnvelope(env); }
-  function applyStats(stats){ return Stats.applyStats(stats); }
-  function looksLikeStatsObject(o){ return Stats.looksLikeStatsObject(o); }
-  function syncStatsFrom(payloadOrStats, opts){ return Stats.syncStatsFrom(payloadOrStats, opts); }
-  function buildStatsUrl(){ return Stats.buildStatsUrl(); }
-  function refreshStats(){ return Stats.refreshStats(); }
-
-  /* =========================
-    UPLOAD (module init)
-  ========================= */
-  var Upload = (MC.initUpload ? MC.initUpload({
-    BOOT: BOOT,
-    DOM: DOM,
-    EP: EP,
-    UI: UI,
-    Guard: Guard,
-    HardLock: HardLock,
-    Toast: Toast,
-    QUOTA_FILES: QUOTA_FILES,
-    Totals: Totals,
-    setEnabled: setEnabled,
-    setPctClass: setPctClass,
-    formatBytes: formatBytes,
-    classifyToast: classifyToast,
-    clearInputs: clearInputs,
-    readInputsIntoQuery: readInputsIntoQuery,
-    runQuery: runQuery,
-    syncStatsFrom: syncStatsFrom
-  }) : null);
-
-  /* =========================
-     LINKS (module init)
-     ========================= */
-  var Links = (MC.initLinks ? MC.initLinks({
-    DOM: DOM,
-    Net: Net,
-    EP: EP,
-    Toast: Toast,
-    Guard: Guard,
-    RowBusy: RowBusy,
-    RenderLife: RenderLife,
-    HardLock: HardLock,
-    CheckIndexFlow: CheckIndexFlow,
-
-    csrfToken: csrfToken,
-
-    encName: encName,
-    decName: decName,
-    cssEscape: cssEscape,
-    startDownloadNoNav: startDownloadNoNav,
-
-    classifyToast: classifyToast,
-    syncStatsFrom: syncStatsFrom,
-
-    readInputsIntoQuery: readInputsIntoQuery,
-    refreshToDesiredCount: refreshToDesiredCount,
-
-    getQueryFlags: function(){ return String(query.flags || 'all'); },
-
-    pageState: pageState,
-    urlInflight: __mcUrlInflight
-  }) : null);
-
-  /* =========================
-    DELEGATED ACTIONS (module init)
-    ========================= */
-  var DelegatedActions = (MC.initDelegatedActions ? MC.initDelegatedActions({
-    DOM: DOM,
-    L: L,
-    Links: Links,
-    decName: decName
-  }) : null);
-
-  function ensureVisibleSharedUrls(){
-    if (DelegatedActions && DelegatedActions.ensureVisibleSharedUrls) {
-      DelegatedActions.ensureVisibleSharedUrls();
-    }
-  }
-
-  function queryKey(){
-    return 'q=' + (query.q||'') + '|from=' + (query.from||'') + '|to=' + (query.to||'') + '|flags=' + (query.flags||'all');
-  }
-
-  function updateCounts(shown, total){
-    shown = Number(shown || 0);
-    total = Number(total || 0);
-    if (DOM.counts.shown1) DOM.counts.shown1.textContent = String(shown);
-    if (DOM.counts.total1) DOM.counts.total1.textContent = String(total);
-    if (DOM.counts.shown2) DOM.counts.shown2.textContent = String(shown);
-    if (DOM.counts.total2) DOM.counts.total2.textContent = String(total);
-  }
-
-  /* =========================
-     RENDER (module init)
-     ========================= */
-  var Render = (MC.initRender ? MC.initRender({
-    DOM: DOM,
-    RenderLife: RenderLife,
-    csrfToken: csrfToken,
-
-    encName: encName,
-    escapeHtml: escapeHtml,
-    formatBytes: formatBytes,
-    formatDate: formatDate,
-    highlightText: highlightText
-  }) : null);
-
-  function renderFiles(arr, totalMatches, highlightTerms, hasMore){
-    if (Render && Render.renderFiles) return Render.renderFiles(arr, totalMatches, highlightTerms, hasMore);
-  }
-
-  /* =========================
-     LIST (module init)
-     ========================= */
-  var __mcNavigatingRef = { value: false };
-
-  var List = (MC.initList ? MC.initList({
-    DOM: DOM,
-    Net: Net,
-    EP: EP,
-    Toast: Toast,
-
-    PAGE_SIZE: PAGE_SIZE,
-
-    splitTerms: splitTerms,
-    decName: decName,
-
-    renderFiles: renderFiles,
-    updateCounts: updateCounts,
-
-    getQuery: function(){ return query; },
-    pageState: pageState,
-
-    // optional helpers (preserve URLs)
-    indexExistingUrlsByName: function(){
-      var map = Object.create(null);
-      for (var i = 0; i < pageState.files.length; i++) {
-        var it = pageState.files[i];
-        if (!it) continue;
-        var n = String(it.name || '');
-        if (!n) continue;
-        if (it.shared && it.url) map[n] = String(it.url);
-      }
-      return map;
-    },
-
-    indexVisibleUrlsFromDom: function(){
-      var map = Object.create(null);
-      if (!DOM.grid) return map;
-
-      var cards = DOM.grid.querySelectorAll('.file-card[data-shared="1"]');
-      for (var i = 0; i < cards.length; i++) {
-        var card = cards[i];
-        var wrapper = card.closest('[data-file-card]');
-        if (!wrapper) continue;
-
-        var key = String(wrapper.getAttribute('data-file-card') || '');
-        var fn = decName(key);
-        if (!fn) continue;
-
-        var u = String(card.getAttribute('data-url') || '').trim();
-        if (!u) {
-          var span = wrapper.querySelector('[data-link-text]');
-          if (span) u = String(span.textContent || '').trim();
-          if (u === 'loading...') u = '';
-        }
-
-        if (u) map[fn] = u;
-      }
-      return map;
-    },
-
-    __mcNavigatingRef: __mcNavigatingRef
-  }) : null);
-
-  function fetchListSafe(offset, append, toastTitle, toastMsg, preserveUrlMap){
-    if (!List || !List.fetchListSafe) return Promise.resolve(null);
-    return List.fetchListSafe(offset, append, toastTitle, toastMsg, preserveUrlMap);
-  }
-
-  function refreshToDesiredCount(toastTitle, toastMsg){
-    if (!List || !List.refreshToDesiredCount) return Promise.resolve(null);
-    return List.refreshToDesiredCount(toastTitle, toastMsg);
-  }
-
-  function runQuery(reset, opts){
-    reset = !!reset;
-    opts = opts || {};
-
-    if (HardLock.isHard() && !opts.allowHard) return Promise.resolve(null);
-    if (!List || !List.runQuery) return Promise.resolve(null);
-    return List.runQuery(reset);
-  }
-
-  /* =========================
-     SEARCH (module init)
-     ========================= */
-  var Search = (MC.initSearch ? MC.initSearch({
-    DOM: DOM,
-    L: L,
-    Guard: Guard,
-    UI: UI,
-    HardLock: HardLock,
-    Toast: Toast,
-
-    PAGE_SIZE: PAGE_SIZE,
-    pageState: pageState,
-
-    setEnabled: setEnabled,
-    fetchListSafe: fetchListSafe,
-    runQuery: runQuery,
-    RenderLife: RenderLife,
-
-    getQuery: function(){ return query; },
-    setQuery: function(q){ query = q; }
-  }) : null);
-
-  function setFlagsUI(value, silent){
-    if (Search && Search.setFlagsUI) return Search.setFlagsUI(value, silent);
-  }
-
-  function readInputsIntoQuery(){
-    if (Search && Search.readInputsIntoQuery) return Search.readInputsIntoQuery();
-    query.q = DOM.search.q ? String(DOM.search.q.value || '') : '';
-    query.from = DOM.search.from ? String(DOM.search.from.value || '') : '';
-    query.to = DOM.search.to ? String(DOM.search.to.value || '') : '';
-    query.flags = DOM.search.flagsBtn ? String(DOM.search.flagsBtn.getAttribute('data-value') || 'all') : 'all';
-    return query;
-  }
-
-  function clearInputs(){
-    if (Search && Search.clearInputs) return Search.clearInputs();
-    if (DOM.search.q) DOM.search.q.value = '';
-    if (DOM.search.from) DOM.search.from.value = '';
-    if (DOM.search.to) DOM.search.to.value = '';
-    setFlagsUI('all', true);
-    query = { q:'', from:'', to:'', flags:'all' };
-    return query;
-  }
-
-  /* =========================
-     MODAL → BASELINE RESET POLICY
-     ========================= */
-  MC.onModalWillShow = function(el){
-    // Storage Control modal => ALWAYS baseline
-    if (DOM && DOM.storageModal && el === DOM.storageModal) {
-      if (Search && Search.resetToInitial) Search.resetToInitial(true);
-      return;
-    }
-
-    // Index Changed modal => baseline only if NOT boot-time
-    if (DOM && DOM.indexChangedModal && el === DOM.indexChangedModal) {
-      if (HardLock && HardLock.source && HardLock.source() !== 'boot') {
-        if (Search && Search.resetToInitial) Search.resetToInitial(true);
-      }
-    }
-  };
-
-  /* =========================
-     AJAX FORMS (module init)
-     ========================= */
-  var AjaxForms = (MC.initAjaxForms ? MC.initAjaxForms({
-    DOM: DOM,
-    L: L,
-
-    Net: Net,
-    EP: EP,
-
-    Toast: Toast,
-    UI: UI,
-    Guard: Guard,
-    RowBusy: RowBusy,
-
-    navigatingRef: __mcNavigatingRef,
-
-    syncStatsFrom: syncStatsFrom,
-    clearInputs: clearInputs,
-    readInputsIntoQuery: readInputsIntoQuery,
-    runQuery: runQuery,
-    refreshToDesiredCount: refreshToDesiredCount,
-
-    setEnabled: setEnabled
-  }) : null);
-
-  function classifyToast(okMsgs, errMsgs, opts){
-    if (AjaxForms && AjaxForms.classifyToast) return AjaxForms.classifyToast(okMsgs, errMsgs, opts);
-    return { kind:'info', title:'Info', msg:'' };
-  }
-
-  function wireAjaxForms(){
-    if (AjaxForms && AjaxForms.wire) AjaxForms.wire();
-  }
 
   /* =========================
      APP INIT (module init)
@@ -655,18 +560,18 @@
 
     CheckIndexFlow: CheckIndexFlow,
 
-    modalHide: modalHide,
+    Modals: Modals,
 
     Totals: Totals,
     pageState: pageState,
     PAGE_SIZE: PAGE_SIZE,
 
-    classifyToast: classifyToast,
-    syncStatsFrom: syncStatsFrom,
-    refreshStats: refreshStats,
+    classifyToast: (MC && MC.classifyToast) ? MC.classifyToast : null,
+    syncStatsFrom: (Stats ? Stats.syncStatsFrom : null),
+    refreshStats: (Stats ? Stats.refreshStats : null),
 
-    renderFiles: renderFiles,
-    updateCounts: updateCounts,
+    renderFiles: (Render && Render.renderFiles) ? Render.renderFiles : null,
+    updateCounts: (UI && UI.updateCounts) ? UI.updateCounts : null,
     splitTerms: splitTerms,
 
     wireAjaxForms: wireAjaxForms,
@@ -676,15 +581,6 @@
     StorageControl: StorageControl,
     Search: Search
   }) : null);
-
-  /* keep old local names (adapters) */
-  function syncInfoModalFromTotals(){
-    if (AppInit && AppInit.syncInfoModalFromTotals) return AppInit.syncInfoModalFromTotals();
-  }
-
-  function applyTotalsUiPolicy(){
-    if (AppInit && AppInit.applyTotalsUiPolicy) return AppInit.applyTotalsUiPolicy();
-  }
 
   /* =========================
     BOOT

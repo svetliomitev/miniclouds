@@ -40,7 +40,7 @@
     var readInputsIntoQuery = deps.readInputsIntoQuery;
     var refreshToDesiredCount = deps.refreshToDesiredCount;
 
-    var modalShow = deps.modalShow;
+    var Modals = deps.Modals || {};
 
     var lastItems = [];                  // [{ name, size, mtime, shared }]
     var selected = Object.create(null);  // name => 1
@@ -385,7 +385,7 @@
 
           if (blocked) return null;
 
-          modalShow(DOM.storageModal);
+          if (Modals && Modals.show) Modals.show(DOM.storageModal);
           return null;
         })
         .catch(function(){

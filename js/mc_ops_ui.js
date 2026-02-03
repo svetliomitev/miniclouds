@@ -160,6 +160,18 @@
       if (RowBusy && RowBusy.reapplyAll) RowBusy.reapplyAll();
     }
 
+    function updateCounts(shown, total){
+      shown = Number(shown || 0);
+      total = Number(total || 0);
+
+      if (DOM && DOM.counts) {
+        if (DOM.counts.shown1) DOM.counts.shown1.textContent = String(shown);
+        if (DOM.counts.total1) DOM.counts.total1.textContent = String(total);
+        if (DOM.counts.shown2) DOM.counts.shown2.textContent = String(shown);
+        if (DOM.counts.total2) DOM.counts.total2.textContent = String(total);
+      }
+    }
+
     // Legacy boolean API (kept for now)
     function setBusy(v){
       v = !!v;
@@ -193,7 +205,8 @@
       getBusy: getBusy,
       setDeleteAllHasFiles: setDeleteAllHasFiles,
       applyButtons: applyButtons,
-      applyGridPolicy: applyGridPolicy
+      applyGridPolicy: applyGridPolicy,
+      updateCounts: updateCounts
     };
   };
 

@@ -33,7 +33,9 @@
 
     var __mcWarnTextRe = /could not be removed|some .* could not/i;
 
-    function classifyToast(okMsgs, errMsgs, optsLocal){
+    // Single owner: toast classification (shared by Upload/Links/AppInit/etc.)
+    // Exposed early so app.js can pass it before initAjaxForms() is called.
+    MC.classifyToast = MC.classifyToast || function classifyToast(okMsgs, errMsgs, optsLocal){
       okMsgs = Array.isArray(okMsgs) ? okMsgs : [];
       errMsgs = Array.isArray(errMsgs) ? errMsgs : [];
       optsLocal = optsLocal || {};
@@ -61,7 +63,9 @@
         return { kind:'success', title: optsLocal.successTitle || 'Success', msg: okMsgs.join(' | ') };
       }
       return { kind:'info', title: optsLocal.infoTitle || 'Info', msg: optsLocal.infoMsg || '' };
-    }
+    };
+
+    var classifyToast = MC.classifyToast;
 
     function wire(){
       function onSubmit(ev){

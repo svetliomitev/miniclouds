@@ -66,6 +66,11 @@
       return q;
     }
 
+    function queryKey(){
+      var q = (typeof getQuery === 'function') ? (getQuery() || {}) : {};
+      return 'q=' + (q.q||'') + '|from=' + (q.from||'') + '|to=' + (q.to||'') + '|flags=' + (q.flags||'all');
+    }
+
     function clearInputs(){
       if (DOM && DOM.search) {
         if (DOM.search.q) DOM.search.q.value = '';
@@ -192,7 +197,8 @@
       setFlagsUI: setFlagsUI,
       readInputsIntoQuery: readInputsIntoQuery,
       clearInputs: clearInputs,
-      resetToInitial: resetToInitial
+      resetToInitial: resetToInitial,
+      queryKey: queryKey
     };
   };
 })();
