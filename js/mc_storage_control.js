@@ -28,7 +28,6 @@
 
     // helpers
     var setEnabled = deps.setEnabled;
-    var setPctClass = deps.setPctClass;
     var escapeHtml = deps.escapeHtml;
     var encName = deps.encName;
     var decName = deps.decName;
@@ -53,28 +52,27 @@
 
     function msgClear(){
       if (!DOM.storageMsg) return;
-      DOM.storageMsg.classList.add('d-none');
-      DOM.storageMsg.className = 'small mb-3 d-none';
+      DOM.storageMsg.className = 'alert d-none mb-3';
       DOM.storageMsg.textContent = '';
     }
 
     function msgShow(kind, text){
       if (!DOM.storageMsg) return;
 
-      kind = String(kind || 'muted');
+      kind = String(kind || 'secondary');
       text = String(text || '').trim();
       if (!text) { msgClear(); return; }
 
-      var cls = 'small mb-3';
-      if (kind === 'success') cls += ' text-success';
-      else if (kind === 'danger') cls += ' text-danger';
-      else if (kind === 'warning') cls += ' text-warning';
-      else if (kind === 'info') cls += ' text-info';
-      else cls += ' text-body-secondary';
+      var cls = 'alert mb-3';
+
+      if (kind === 'success') cls += ' alert-success';
+      else if (kind === 'danger') cls += ' alert-danger';
+      else if (kind === 'warning') cls += ' alert-warning';
+      else if (kind === 'info') cls += ' alert-info';
+      else cls += ' alert-secondary';
 
       DOM.storageMsg.className = cls;
       DOM.storageMsg.textContent = text;
-      DOM.storageMsg.classList.remove('d-none');
     }
 
     function clearSelection(){
@@ -90,21 +88,13 @@
     }
 
     function resetProgress(){
-      if (DOM.storageProgressBar) {
-        setPctClass(DOM.storageProgressBar, 0);
-        DOM.storageProgressBar.textContent = '0%';
-      }
+      // Indeterminate progress: just hide
       if (DOM.storageProgressWrap) DOM.storageProgressWrap.classList.add('d-none');
     }
 
     function setProgress(pct){
-      pct = Math.max(0, Math.min(100, pct));
+      // Indeterminate progress: just show (ignore pct)
       if (DOM.storageProgressWrap) DOM.storageProgressWrap.classList.remove('d-none');
-      if (DOM.storageProgressBar) {
-        setPctClass(DOM.storageProgressBar, pct);
-        pct = Math.round(Number(pct) || 0);
-        DOM.storageProgressBar.textContent = pct + '%';
-      }
     }
 
     function resetUi(){
@@ -223,40 +213,7 @@
         clearSelection();
         render();
 
-        function start(){
-          return postStorage('storage_scan', { mode: 'start', limit: 200 })
-            .then(function(r){
-              if (!Net.isAppOk(r)) return null;
-
-              var env = r.data || {};
-              var payload = pickDataPayload(env);
-
-              syncStatsFrom(env);
-
-              var scanId = String(payload.scan_id || '');
-              var total = Number(payload.total || 0);
-
-              if (!scanId) return null;
-
-              if (total <= 0) {
-                msgShow('info', 'No files to scan.');
-                setProgress(100);
-                return { scanId: scanId, total: 0, done: 0, done_flag: 1 };
-              }
-
-              return step(scanId, total, 0);
-            });
-        }
-
-        function step(scanId, total, offset){
-          var chunk = 25;
-
-          return postStorage('storage_scan', {
-            mode: 'step',
-            scan_id: scanId,
-            offset: offset,
-            chunk: chunk
-          })
+        return postStorage('storage_scan', { limit: 200 })
           .then(function(r){
             if (!Net.isAppOk(r)) return null;
 
@@ -265,44 +222,19 @@
 
             syncStatsFrom(env);
 
-            var items = Array.isArray(payload.items) ? payload.items : [];
-
-            if (offset === 0) {
-              lastItems = items;
-            } else {
-              for (var i = 0; i < items.length; i++) lastItems.push(items[i]);
-            }
-
-            var done = Number(payload.done || 0);
-            var tot = Number(payload.total || total || 0);
-            var doneFlag = (Number(payload.done_flag || 0) === 1);
-
-            if (tot > 0) setProgress(Math.floor((done * 100) / tot));
-
+            lastItems = Array.isArray(payload.items) ? payload.items : [];
+            clearSelection();
             render();
-
-            if (!doneFlag) return step(scanId, tot, done);
 
             msgShow('success', 'Scan completed.');
             setProgress(100);
 
             if (DOM.storageList) DOM.storageList.scrollTop = 0;
 
-            return payload;
+            return true;
           })
           .catch(function(){
             return null;
-          });
-        }
-
-        return Promise.resolve()
-          .then(start)
-          .then(function(payload){
-            if (!payload) {
-              msgShow('danger', 'Scan failed.');
-              return null;
-            }
-            return payload;
           })
           .finally(function(){
             UI.busyRelease(tok);

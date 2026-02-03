@@ -8,7 +8,7 @@ mc_session_start();
 
 $nonce = mc_csp_nonce();
 
-$APP_VERSION = '2.2.3';
+$APP_VERSION = '2.2.4';
 
 /* =========================
    INSTALLER / RECONFIGURATOR

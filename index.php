@@ -418,12 +418,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             break;
 
         case 'storage_scan':
-            // Admin tool: scan biggest files (AJAX only) - real progress via chunked steps
+            // Admin tool: scan biggest files (AJAX only) - single pass, no progress state
             if (!$isAjax) {
                 $err[] = 'Storage scan is available only via AJAX.';
             } else {
-                $mode = (string)($_POST['mode'] ?? 'start'); // start | step
-
                 $limit = (int)($_POST['limit'] ?? 200);
                 if ($limit < 10) $limit = 10;
                 if ($limit > 500) $limit = 500;
@@ -431,167 +429,45 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 // Shared checks: fast when we have a complete shared index
                 $useSharedSetScan = ($sharedComplete && is_array($sharedSet)) ? $sharedSet : null;
 
-                // Where we store scan session state
-                $scanDir = $CACHE_DIR . '/storage_scan';
-                if (!is_dir($scanDir)) @mkdir($scanDir, 0755, true);
-                // Opportunistic cleanup: remove stale scan state files
-                $ttl = 20 * 60; // 20 minutes
-                $now = time();
-                $glob = @glob($scanDir . '/scan_*.json');
-                if (is_array($glob)) {
-                    foreach ($glob as $p) {
-                        if (!is_string($p) || !is_file($p)) continue;
-                        $st = @stat($p);
-                        $mt = is_array($st) ? (int)($st['mtime'] ?? 0) : 0;
-                        if ($mt > 0 && ($now - $mt) > $ttl) {
-                            @unlink($p);
-                        }
-                    }
+                $idxNow = file_index_load($CACHE_DIR);
+
+                $rows = array_values($idxNow);
+                usort($rows, function($a, $b){
+                    $sa = (int)($a['size'] ?? 0);
+                    $sb = (int)($b['size'] ?? 0);
+                    if ($sa === $sb) return 0;
+                    return ($sa > $sb) ? -1 : 1;
+                });
+
+                $items = [];
+                $n = min($limit, count($rows));
+                for ($i = 0; $i < $n; $i++) {
+                    $r = $rows[$i];
+                    $nm = (string)($r['name'] ?? '');
+                    if ($nm === '') continue;
+
+                    $isShared = false;
+                    if (is_array($useSharedSetScan)) $isShared = shared_index_has($useSharedSetScan, $nm);
+                    else $isShared = is_shared_file($BY_DIR, $nm);
+
+                    $items[] = [
+                        'name'   => $nm,
+                        'size'   => (int)($r['size'] ?? 0),
+                        'mtime'  => (int)($r['mtime'] ?? 0),
+                        'shared' => $isShared ? 1 : 0,
+                    ];
                 }
 
-                // Start: build sorted name list ONCE and persist for stepping
-                if ($mode === 'start') {
-                    $idxNow = file_index_load($CACHE_DIR);
+                $idxNowState = mc_index_state($CACHE_DIR, $UPLOAD_DIR);
 
-                    $rows = array_values($idxNow);
-                    usort($rows, function($a, $b){
-                        $sa = (int)($a['size'] ?? 0);
-                        $sb = (int)($b['size'] ?? 0);
-                        if ($sa === $sb) return 0;
-                        return ($sa > $sb) ? -1 : 1;
-                    });
-
-                    $names = [];
-                    $n = min($limit, count($rows));
-                    for ($i = 0; $i < $n; $i++) {
-                        $nm = (string)($rows[$i]['name'] ?? '');
-                        if ($nm !== '') $names[] = $nm;
-                    }
-
-                    // Scan id (short, safe)
-                    $scanId = bin2hex(random_bytes(8));
-                    $scanPath = $scanDir . '/scan_' . $scanId . '.json';
-
-                    // Persist name list (items will be computed in steps)
-                    @file_put_contents($scanPath, json_encode([
-                        't' => time(),
-                        'limit' => $limit,
-                        'names' => $names,
-                    ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
-
-                    $ok[] = 'Storage scan started.';
-                    $idxNowState = mc_index_state($CACHE_DIR, $UPLOAD_DIR);
-
-                    mc_ajax_respond(
-                        $ok,
-                        $err,
-                        '',
-                        [
-                            'scan_id' => $scanId,
-                            'total' => count($names),
-                        ],
-                        mc_stats_payload($idxNowState, $idxNow)
-                    );
-                    exit;
-                }
-
-                // Step: compute shared flag + read size/mtime from index for a chunk
-                if ($mode === 'step') {
-                    $scanId = preg_replace('~[^a-f0-9]~i', '', (string)($_POST['scan_id'] ?? ''));
-                    $offset = (int)($_POST['offset'] ?? 0);
-                    if ($offset < 0) $offset = 0;
-
-                    $chunk = (int)($_POST['chunk'] ?? 25);
-                    if ($chunk < 5) $chunk = 5;
-                    if ($chunk > 50) $chunk = 50;
-
-                    if ($scanId === '') {
-                        $err[] = 'Invalid scan id.';
-                        mc_ajax_respond($ok, $err, '', [], mc_stats_payload(mc_index_state($CACHE_DIR, $UPLOAD_DIR), $fileIndex));
-                        exit;
-                    }
-
-                    $scanPath = $scanDir . '/scan_' . $scanId . '.json';
-                    if (!is_file($scanPath)) {
-                        $err[] = 'Scan expired.';
-                        mc_ajax_respond($ok, $err, '', [], mc_stats_payload(mc_index_state($CACHE_DIR, $UPLOAD_DIR), $fileIndex));
-                        exit;
-                    }
-
-                    $raw = @file_get_contents($scanPath);
-                    $j = json_decode((string)$raw, true);
-                    $names = (is_array($j) && is_array($j['names'] ?? null)) ? $j['names'] : [];
-
-                    $total = count($names);
-                    if ($total === 0) {
-                        @unlink($scanPath);
-                        $err[] = 'Scan expired.';
-                        $idxNow = file_index_load($CACHE_DIR);
-                        $idxNowState = mc_index_state($CACHE_DIR, $UPLOAD_DIR);
-
-                        mc_ajax_respond(
-                            $ok,
-                            $err,
-                            '',
-                            [],
-                            mc_stats_payload($idxNowState, $idxNow)
-                        );
-                        exit;
-                    }
-
-                    $idxNow = file_index_load($CACHE_DIR);
-
-                    $items = [];
-                    $end = min($total, $offset + $chunk);
-
-                    for ($i = $offset; $i < $end; $i++) {
-                        $nm = (string)$names[$i];
-                        if ($nm === '') continue;
-
-                        $r = $idxNow[$nm] ?? null;
-
-                        $isShared = false;
-                        if (is_array($useSharedSetScan)) {
-                            $isShared = shared_index_has($useSharedSetScan, $nm);
-                        } else {
-                            $isShared = is_shared_file($BY_DIR, $nm);
-                        }
-
-                        $items[] = [
-                            'name'   => $nm,
-                            'size'   => (int)($r['size'] ?? 0),
-                            'mtime'  => (int)($r['mtime'] ?? 0),
-                            'shared' => $isShared ? 1 : 0,
-                        ];
-                    }
-
-                    $done = $end;
-                    $doneFlag = ($done >= $total) ? 1 : 0;
-
-                    // If done, we can delete the scan file to keep cache clean
-                    if ($doneFlag) {
-                        @unlink($scanPath);
-                        $ok[] = 'Storage scan completed.';
-                    }
-
-                    $idxNowState = mc_index_state($CACHE_DIR, $UPLOAD_DIR);
-
-                    mc_ajax_respond(
-                        $ok,
-                        $err,
-                        '',
-                        [
-                            'items' => $items,     // chunk only
-                            'done'  => $done,
-                            'total' => $total,
-                            'done_flag' => $doneFlag,
-                        ],
-                        mc_stats_payload($idxNowState, $idxNow)
-                    );
-                    exit;
-                }
-
-                $err[] = 'Unknown scan mode.';
+                mc_ajax_respond(
+                    $ok,
+                    $err,
+                    '',
+                    [ 'items' => $items ],
+                    mc_stats_payload($idxNowState, $idxNow)
+                );
+                exit;
             }
             break;
 
@@ -602,11 +478,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             } else {
                 $names = $_POST['names'] ?? [];
                 if (!is_array($names)) $names = [];
-
-                // When deleting in chunks, we don't want to rebuild/return the big list every time.
-                // return_items=1 => include refreshed scan list in response (use only on last chunk).
-                $returnItems = (int)($_POST['return_items'] ?? 1);
-                if ($returnItems !== 0) $returnItems = 1;
 
                 $deleted = 0;
                 $failed = 0;
@@ -675,39 +546,37 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'failed' => $failed,
                 ];
 
-                if ($returnItems === 1) {
-                    // Return the updated scan list (now consistent)
-                    $useSharedSetScan = ($sharedComplete && is_array($sharedSet)) ? $sharedSet : null;
+                // Always return the updated scan list (now consistent)
+                $useSharedSetScan = ($sharedComplete && is_array($sharedSet)) ? $sharedSet : null;
 
-                    $rows = array_values($idxNow);
-                    usort($rows, function($a, $b){
-                        $sa = (int)($a['size'] ?? 0);
-                        $sb = (int)($b['size'] ?? 0);
-                        if ($sa === $sb) return 0;
-                        return ($sa > $sb) ? -1 : 1;
-                    });
+                $rows = array_values($idxNow);
+                usort($rows, function($a, $b){
+                    $sa = (int)($a['size'] ?? 0);
+                    $sb = (int)($b['size'] ?? 0);
+                    if ($sa === $sb) return 0;
+                    return ($sa > $sb) ? -1 : 1;
+                });
 
-                    $items = [];
-                    $n = min(200, count($rows));
-                    for ($i = 0; $i < $n; $i++) {
-                        $r = $rows[$i];
-                        $nm = (string)($r['name'] ?? '');
-                        if ($nm === '') continue;
+                $items = [];
+                $n = min(200, count($rows));
+                for ($i = 0; $i < $n; $i++) {
+                    $r = $rows[$i];
+                    $nm = (string)($r['name'] ?? '');
+                    if ($nm === '') continue;
 
-                        $isShared = false;
-                        if (is_array($useSharedSetScan)) $isShared = shared_index_has($useSharedSetScan, $nm);
-                        else $isShared = is_shared_file($BY_DIR, $nm);
+                    $isShared = false;
+                    if (is_array($useSharedSetScan)) $isShared = shared_index_has($useSharedSetScan, $nm);
+                    else $isShared = is_shared_file($BY_DIR, $nm);
 
-                        $items[] = [
-                            'name'   => $nm,
-                            'size'   => (int)($r['size'] ?? 0),
-                            'mtime'  => (int)($r['mtime'] ?? 0),
-                            'shared' => $isShared ? 1 : 0,
-                        ];
-                    }
-
-                    $data['items'] = $items;
+                    $items[] = [
+                        'name'   => $nm,
+                        'size'   => (int)($r['size'] ?? 0),
+                        'mtime'  => (int)($r['mtime'] ?? 0),
+                        'shared' => $isShared ? 1 : 0,
+                    ];
                 }
+
+                $data['items'] = $items;
 
                 mc_ajax_respond(
                     $ok,
@@ -1409,10 +1278,14 @@ $totalHuman = format_bytes($totalBytes);
         </div>
 
         <div class="progress mb-3 d-none" id="mcStorageProgressWrap" role="progressbar" aria-label="Storage tool progress">
-          <div class="progress-bar mc-w-0" id="mcStorageProgressBar">0%</div>
+          <div class="progress-bar progress-bar-striped progress-bar-animated w-100" id="mcStorageProgressBar"></div>
         </div>
 
-        <div id="mcStorageMsg" class="small mb-3 d-none" role="status" aria-live="polite"></div>
+        <div id="mcStorageMsg"
+            class="alert d-none mb-3"
+            role="status"
+            aria-live="polite">
+        </div>
 
         <div id="mcStorageList" class="mc-storage-list">
           <!-- JS renders rows here -->
