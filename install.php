@@ -310,16 +310,18 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && (string)($_POST['action'] ?
                 $ht .= "  Require all granted\n";
                 $ht .= "</Files>\n\n";
 
-                /* install.php (configurator) protected */
-                $ht .= "<Files \"install.php\">\n";
-                $ht .= "  AuthType Basic\n";
-                $ht .= "  AuthName \"" . $authNameSafe . "\"\n";
-                $ht .= "  AuthUserFile " . $HTPASSWD . "\n";
-                $ht .= "  <RequireAll>\n";
-                $ht .= "    Require valid-user\n";
-                $ht .= "    " . $indexIpRules . "\n";
-                $ht .= "  </RequireAll>\n";
-                $ht .= "</Files>\n\n";
+                /* install.php (configurator) protected ONLY after install */
+                if ($alreadyInstalled) {
+                    $ht .= "<Files \"install.php\">\n";
+                    $ht .= "  AuthType Basic\n";
+                    $ht .= "  AuthName \"" . $authNameSafe . "\"\n";
+                    $ht .= "  AuthUserFile " . $HTPASSWD . "\n";
+                    $ht .= "  <RequireAll>\n";
+                    $ht .= "    Require valid-user\n";
+                    $ht .= "    " . $indexIpRules . "\n";
+                    $ht .= "  </RequireAll>\n";
+                    $ht .= "</Files>\n\n";
+                }
 
                 $ht .= "ErrorDocument 401 " . $err401 . "\n";
                 $ht .= "ErrorDocument 403 " . $err403 . "\n";
