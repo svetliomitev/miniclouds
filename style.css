@@ -416,6 +416,8 @@ mark{ padding: .05em .2em; border-radius: .25rem; }
   }
 }
 
+#mcStorageMsg { white-space: pre-line; }
+
 /* =========================
    FOOTER
    ========================= */
