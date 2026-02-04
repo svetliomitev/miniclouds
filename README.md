@@ -291,18 +291,38 @@ Each instance is fully independent:
 ⚠️ **Avoid nested instance layouts**, such as:
 
 ```text
+Avoid such present on the same system:
+
 /public_html/{instance}
-/public_html/mycloud/{instance}
+/public_html/{instance}/{instance}
 ```
 
 or
 
 ```text
+Also not good in general:
+
 /public_html/{instance}
 /public_html/{instance}/mycloud/{instance}
 ```
 
 Such layouts may cause .htaccess rule conflicts and unpredictable behavior.
+
+✅ **Good structure for multi instance installs** is
+
+```text
+/public_html/{instance1}
+/public_html/{instance2}
+/public_html/{instance3}
+```
+
+or per example
+
+```text
+/public_html/cloudusers/{instance1}
+/public_html/cloudusers/{instance2}
+/public_html/cloudusers/{instance3}
+```
 
 After installation, the application is ready to use, you just enter you username and password that you filled in the installer wizard.
 
